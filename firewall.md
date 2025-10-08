@@ -740,9 +740,33 @@ echo "[+] DDoS protection configured"
 ```
 
 ### **Шаг 4.2: Настройка гео-фильтрации**
+Вариант 1
+```
+#!/bin/bash
+# Альтернативный способ блокировки по странам без xt_geoip
+
+# Устанавливаем ipset
+sudo apt install -y ipset
+
+# Создаем наборы IP для стран
+sudo ipset create blocked_countries hash:net
+
+# Добавляем подсети конкретных стран (пример для России и Китая)
+# Эти данные нужно получить из внешних источников
+sudo ipset add blocked_countries 192.168.1.0/24  # пример
+# sudo ipset add blocked_countries x.x.x.x/x      # реальные подсети
+
+# Применяем правила iptables
+sudo iptables -I INPUT -m set --match-set blocked_countries src -j DROP
+sudo iptables -I FORWARD -m set --match-set blocked_countries src -j DROP
+
+# Сохраняем правила
+sudo ipset save blocked_countries > /etc/ipset.conf
+```
+Вариант 2
 
 ```bash
-# Установка geoip баззы
+# Установка geoip базы
 apt install xtables-addons-dkms libtext-csv-xs-perl -y
 
 # Скачивание geoip базы
