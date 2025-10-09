@@ -438,3 +438,507 @@ sequenceDiagram
 | **Основные цели** | Обход блокировок, контент-фильтры, анонимность, кэширование | Балансировка нагрузки, защита бэкенда, кэширование, SSL-терминация |
 
 Эти диаграммы и пояснения показывают фундаментальное различие между двумя типами прокси-серверов и их внутреннюю логику работы на уровне последовательности событий.
+
+Давайте максимально подробно разберем работу **обратного (reverse) прокси-сервера**. Это ключевой компонент современной веб-архитектуры.
+
+## Архитектура обратного прокси
+
+```mermaid
+graph TB
+    subgraph "Интернет"
+        A[Клиент]
+    end
+    
+    subgraph "Периметр сети"
+        B[Обратный прокси]
+    end
+    
+    subgraph "Внутренняя сеть DMZ"
+        C[Веб-сервер 1]
+        D[Веб-сервер 2]
+        E[Сервер приложений]
+        F[Файловый сервер]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    
+    G[Балансировщик нагрузки] --> B
+```
+
+---
+
+## Детальная диаграмма последовательности HTTP запроса
+
+```mermaid
+sequenceDiagram
+    participant Client as Клиент
+    participant DNS as DNS сервер
+    participant RevProxy as Обратный прокси
+    participant Backend1 as Бэкенд-сервер 1
+    participant Backend2 as Бэкенд-сервер 2
+    participant Database as База данных
+
+    Note over Client, DNS: Этап 0: DNS разрешение
+    Client->>DNS: DNS запрос для app.company.com
+    DNS-->>Client: IP обратного прокси (203.0.113.10)
+    
+    Note over Client, RevProxy: Этап 1: Установка безопасного соединения
+    Client->>RevProxy: ClientHello (TLS handshake)
+    RevProxy-->>Client: ServerHello, Certificate, Done
+    Client->>RevProxy: TLS Finished
+    Note right of RevProxy: TLS терминация<br>Расшифровка трафика
+    
+    Note over Client, RevProxy: Этап 2: Отправка HTTP запроса
+    Client->>RevProxy: GET /api/users/123 HTTP/1.1<br>Host: app.company.com<br>Authorization: Bearer xxx
+    
+    Note right of RevProxy: Этап 3: Внутренняя обработка прокси
+    rect rgb(240, 240, 255)
+    Note right of RevProxy: Анализ запроса<br>Балансировка нагрузки<br>Проверка кэша<br>Проверка WAF
+    end
+    
+    Note over RevProxy, Backend1: Этап 4: Маршрутизация к бэкенду
+    RevProxy->>Backend1: GET /api/users/123 HTTP/1.1<br>Host: backend-1.internal<br>X-Forwarded-For: 93.184.216.34<br>X-Real-IP: 93.184.216.34
+    
+    Note over Backend1, Database: Этап 5: Обработка на бэкенде
+    Backend1->>Database: SQL SELECT * FROM users WHERE id=123
+    Database-->>Backend1: Данные пользователя
+    Backend1-->>RevProxy: HTTP 200 OK + JSON данные
+    
+    Note right of RevProxy: Этап 6: Пост-обработка ответа
+    rect rgb(240, 255, 240)
+    Note right of RevProxy: Кэширование<br>Сжатие GZIP<br>Инъекция заголовков<br>Валидация
+    end
+    
+    Note over RevProxy, Client: Этап 7: Отправка ответа клиенту
+    RevProxy-->>Client: HTTP 200 OK<br>Content-Encoding: gzip<br>X-Cache: HIT<br>Set-Cookie: session=abc
+    
+    Note over Client, RevProxy: Этап 8: Завершение
+    Client->>RevProxy: TLS close_notify
+```
+
+---
+
+## Детальное описание каждого этапа
+
+### Этап 0: DNS разрешение и сетевой поток
+
+**Трафик проходит через несколько уровней:**
+```
+Клиент (93.184.216.34) → Обратный прокси (203.0.113.10:443) → Бэкенд (10.0.1.20:8080)
+```
+
+**DNS запись:**
+```
+app.company.com.    IN    A    203.0.113.10
+```
+
+### Этап 1: TLS терминация (SSL Offloading)
+
+**Полный TLS handshake на прокси:**
+```
+Клиент → Прокси:
+    ClientHello
+    (поддерживаемые шифры, TLS версия)
+
+Прокси → Клиент:
+    ServerHello
+    Certificate (сертификат app.company.com)
+    ServerHelloDone
+
+Клиент → Прокси:
+    ClientKeyExchange
+    ChangeCipherSpec
+    Finished
+
+Прокси → Клиент:
+    ChangeCipherSpec  
+    Finished
+```
+
+**Преимущества терминации TLS на прокси:**
+- Снижение нагрузки на бэкенд-серверы
+- Централизованное управление сертификатами
+- Возможность использовать аппаратное ускорение SSL
+
+### Этап 2: Получение HTTP запроса
+
+**Оригинальный запрос от клиента:**
+```http
+GET /api/users/123 HTTP/1.1
+Host: app.company.com
+User-Agent: Mozilla/5.0
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+Accept: application/json
+Cookie: session=abc123
+```
+
+### Этап 3: Внутренняя обработка на обратном прокси
+
+#### 3.1. Анализ и парсинг запроса
+
+```python
+def parse_and_route_request(request):
+    # Извлечение информации из запроса
+    path = request.path  # /api/users/123
+    method = request.method  # GET
+    headers = request.headers
+    client_ip = request.remote_addr
+    
+    # Применение правил маршрутизации
+    backend = route_based_on_rules(path, method, headers)
+    
+    return backend
+
+def route_based_on_rules(path, method, headers):
+    # Маршрутизация на основе пути
+    if path.startswith('/api/'):
+        return load_balance(api_servers, method)
+    elif path.startswith('/static/'):
+        return static_files_server
+    elif path.startswith('/admin/'):
+        return admin_server
+    else:
+        return default_web_server
+```
+
+#### 3.2. Балансировка нагрузки
+
+**Алгоритмы балансировки:**
+```python
+class LoadBalancer:
+    def __init__(self):
+        self.servers = [
+            {'host': '10.0.1.20', 'port': 8080, 'weight': 1, 'active_conn': 5},
+            {'host': '10.0.1.21', 'port': 8080, 'weight': 1, 'active_conn': 3},
+            {'host': '10.0.1.22', 'port': 8080, 'weight': 2, 'active_conn': 8}
+        ]
+    
+    def round_robin(self):
+        # Циклический перебор
+        next_server = self.servers.pop(0)
+        self.servers.append(next_server)
+        return next_server
+    
+    def least_connections(self):
+        # Наименьшее количество соединений
+        return min(self.servers, key=lambda x: x['active_conn'])
+    
+    def weighted_round_robin(self):
+        # Взвешенный round-robin
+        total_weight = sum(s['weight'] for s in self.servers)
+        # ... логика выбора на основе весов
+```
+
+#### 3.3. Web Application Firewall (WAF)
+
+```python
+def waf_check(request):
+    # Проверка SQL инъекций
+    if has_sql_injection(request.path, request.query, request.body):
+        return HTTP_403_Forbidden, "Blocked by WAF"
+    
+    # Проверка XSS атак
+    if has_xss_payload(request):
+        return HTTP_403_Forbidden, "XSS attempt blocked"
+    
+    # Проверка ботов и DDoS
+    if is_ddos_attack(request.client_ip):
+        rate_limit(request.client_ip)
+        return HTTP_429_Too_Many_Requests
+    
+    return None  # Проверка пройдена
+```
+
+#### 3.4. Проверка кэша
+
+```python
+def check_cache(request):
+    cache_key = generate_cache_key(
+        request.method,
+        request.path, 
+        request.query_string,
+        request.headers.get('Authorization')
+    )
+    
+    cached_response = cache_store.get(cache_key)
+    
+    if cached_response and not cached_response.is_expired():
+        # Возвращаем закэшированный ответ
+        return cached_response
+    
+    return None
+```
+
+### Этап 4: Маршрутизация к бэкенду
+
+**Модифицированный запрос к бэкенд-серверу:**
+```http
+GET /api/users/123 HTTP/1.1
+Host: backend-1.internal:8080
+X-Forwarded-For: 93.184.216.34
+X-Real-IP: 93.184.216.34
+X-Forwarded-Proto: https
+X-Forwarded-Host: app.company.com
+X-Forwarded-Port: 443
+User-Agent: Mozilla/5.0
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+```
+
+**Важные заголовки:**
+- **`X-Forwarded-For`**: Оригинальный IP клиента
+- **`X-Real-IP`**: Альтернативный заголовок для IP
+- **`X-Forwarded-Proto`**: Оригинальная схема (http/https)
+- **`X-Forwarded-Host`**: Оригинальный Host заголовок
+
+### Этап 5: Обработка на бэкенд-сервере
+
+Бэкенд-сервер видит запрос как:
+```
+Клиент: 203.0.113.10 (IP прокси)
+Оригинальный клиент: 93.184.216.34 (из X-Forwarded-For)
+```
+
+**Пример логики бэкенда:**
+```python
+@app.route('/api/users/<user_id>')
+def get_user(user_id):
+    # Получаем реальный IP клиента
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    
+    # Логика приложения
+    user = database.get_user(user_id)
+    
+    # Аудит с реальным IP
+    audit_log(f"User {user_id} accessed by {client_ip}")
+    
+    return jsonify(user.to_dict())
+```
+
+### Этап 6: Пост-обработка ответа
+
+#### 6.1. Кэширование
+```python
+def cache_response(request, response):
+    if is_cacheable(request, response):
+        cache_key = generate_cache_key(request)
+        cache_control = response.headers.get('Cache-Control', '')
+        
+        ttl = calculate_ttl(cache_control)
+        if ttl > 0:
+            cache_store.set(cache_key, response, ttl=ttl)
+            response.headers['X-Cache'] = 'MISS'
+```
+
+#### 6.2. Сжатие контента
+```python
+def compress_content(response):
+    accept_encoding = request.headers.get('Accept-Encoding', '')
+    
+    if 'gzip' in accept_encoding and len(response.data) > 1024:
+        compressed_data = gzip.compress(response.data)
+        response.data = compressed_data
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Length'] = len(compressed_data)
+```
+
+#### 6.3. Инъекция заголовков безопасности
+```python
+def add_security_headers(response):
+    # CSP - Content Security Policy
+    response.headers['Content-Security-Policy'] = "default-src 'self'"
+    
+    # HSTS - HTTP Strict Transport Security
+    response.headers['Strict-Transport-Security'] = "max-age=31536000"
+    
+    # Защита от кликджекинга
+    response.headers['X-Frame-Options'] = "DENY"
+    
+    # XSS защита
+    response.headers['X-XSS-Protection'] = "1; mode=block"
+    
+    # MIME тип
+    response.headers['X-Content-Type-Options'] = "nosniff"
+```
+
+### Этап 7: Финальный ответ клиенту
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Content-Encoding: gzip
+Content-Length: 356
+Cache-Control: public, max-age=300
+X-Cache: HIT
+X-Proxy-Server: nginx/1.18
+Strict-Transport-Security: max-age=31536000
+X-Frame-Options: DENY
+Set-Cookie: session=abc123; Secure; HttpOnly
+
+<сжатые JSON данные>
+```
+
+---
+
+## Расширенные функции обратного прокси
+
+### Health Checks и Circuit Breaker
+
+```python
+class HealthChecker:
+    def __init__(self):
+        self.server_status = {}
+    
+    def check_health(self, server):
+        try:
+            response = requests.get(f"http://{server}/health", timeout=5)
+            if response.status_code == 200:
+                self.server_status[server] = 'healthy'
+                return True
+        except requests.RequestException:
+            self.server_status[server] = 'unhealthy'
+            return False
+    
+    def get_healthy_servers(self):
+        return [s for s, status in self.server_status.items() 
+                if status == 'healthy']
+```
+
+### Контентная маршрутизация
+
+```nginx
+# Пример nginx конфигурации
+server {
+    listen 443 ssl;
+    server_name app.company.com;
+    
+    # Статические файлы
+    location /static/ {
+        proxy_pass http://static-servers;
+        expires 1y;
+        add_header Cache-Control "public";
+    }
+    
+    # API маршруты
+    location /api/ {
+        proxy_pass http://api-servers;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+    
+    # Админка
+    location /admin/ {
+        proxy_pass http://admin-servers;
+        auth_basic "Admin Area";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+    }
+    
+    # WebSocket поддержка
+    location /ws/ {
+        proxy_pass http://websocket-servers;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### Rate Limiting и DDoS защита
+
+```python
+class RateLimiter:
+    def __init__(self, requests_per_minute=100):
+        self.requests_per_minute = requests_per_minute
+        self.client_requests = defaultdict(list)
+    
+    def is_allowed(self, client_ip):
+        now = time.time()
+        client_requests = self.client_requests[client_ip]
+        
+        # Удаляем старые запросы (старше 1 минуты)
+        client_requests = [req_time for req_time in client_requests 
+                          if now - req_time < 60]
+        self.client_requests[client_ip] = client_requests
+        
+        # Проверяем лимит
+        if len(client_requests) >= self.requests_per_minute:
+            return False
+        
+        # Добавляем текущий запрос
+        client_requests.append(now)
+        return True
+```
+
+---
+
+## Примеры конфигурации популярных обратных прокси
+
+### Nginx
+```nginx
+http {
+    upstream backend_servers {
+        server 10.0.1.20:8080 weight=3;
+        server 10.0.1.21:8080 weight=2;
+        server 10.0.1.22:8080 weight=1;
+        
+        keepalive 32;
+    }
+    
+    server {
+        listen 443 ssl http2;
+        server_name app.company.com;
+        
+        ssl_certificate /etc/ssl/certs/app.company.com.crt;
+        ssl_certificate_key /etc/ssl/private/app.company.com.key;
+        
+        # Безопасность
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        
+        location / {
+            proxy_pass http://backend_servers;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Host $host;
+            
+            # Таймауты
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+            
+            # Health check
+            proxy_next_upstream error timeout invalid_header http_500 http_502 http_503;
+        }
+        
+        # Статика
+        location /static/ {
+            alias /var/www/static/;
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+}
+```
+
+### Apache mod_proxy
+```apache
+<VirtualHost *:443>
+    ServerName app.company.com
+    
+    SSLEngine on
+    SSLCertificateFile "/etc/ssl/certs/server.crt"
+    SSLCertificateKeyFile "/etc/ssl/private/server.key"
+    
+    ProxyPreserveHost On
+    ProxyPass /api/ http://backend-server:8080/api/
+    ProxyPassReverse /api/ http://backend-server:8080/api/
+    
+    # Заголовки безопасности
+    Header always set Strict-Transport-Security "max-age=31536000"
+    Header always set X-Content-Type-Options nosniff
+</VirtualHost>
+```
+
+Обратный прокси - это мощный инструмент, который обеспечивает безопасность, производительность и надежность современных веб-приложений, выступая единой точкой входа для всего трафика.
