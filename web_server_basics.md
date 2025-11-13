@@ -80,9 +80,217 @@
 
 ---
 
-### Ключевые выводы для новичка
+### Ключевые выводы 
 
 1.  **Это цикл "Запрос-Ответ"**. Взаимодействие всегда инициируется клиентом. Сервер не может сам решить "отправить" вам что-то. Он только отвечает на запросы.
 2.  **HTTP/HTTPS — это язык общения.** Браузер и сервер "разговаривают" друг с другом по правилам протокола HTTP (или его защищенной версии HTTPS).
 3.  **Статика vs. Динамика.** Сервер может просто отдавать готовые файлы, а может выполнять код для генерации уникальной страницы для каждого пользователя.
 4.  **Браузер делает большую работу.** Сервер дает "сырые данные" (HTML, CSS, JS), а браузер — это мощный движок, который превращает эти данные в визуальную страницу.
+
+
+## 1. Основная схема работы веб-сервера
+
+```mermaid
+sequenceDiagram
+    participant U as Пользователь
+    participant B as Браузер
+    participant DNS as DNS-сервер
+    participant S as Веб-сервер
+    participant FS as Файловая система
+    participant DB as База данных
+
+    Note over U,S: Этап 1: Подготовка запроса
+    U->>B: Вводит URL (example.com)
+    B->>DNS: DNS-запрос для example.com
+    DNS-->>B: IP-адрес: 93.184.216.34
+    
+    Note over U,S: Этап 2: Установка соединения
+    B->>S: TCP handshake (SYN, SYN-ACK, ACK)
+    B->>S: TLS handshake (для HTTPS)
+    
+    Note over U,S: Этап 3: Отправка запроса
+    B->>S: HTTP GET /index.html
+    Note right of B: Заголовки:<br>Host: example.com<br>User-Agent: Chrome<br>Accept: text/html
+    
+    Note over U,S: Этап 4: Обработка на сервере
+    S->>FS: Ищет файл /var/www/index.html
+    FS-->>S: Возвращает файл
+    S->>DB: SELECT * FROM posts (если нужно)
+    DB-->>S: Данные из БД
+    
+    Note over U,S: Этап 5: Формирование ответа
+    S->>S: Генерирует HTML страницу
+    S-->>B: HTTP 200 OK
+    Note left of S: Заголовки ответа:<br>Content-Type: text/html<br>Content-Length: 1542<br>Set-Cookie: session=abc123
+    
+    Note over U,S: Этап 6: Получение доп. ресурсов
+    B->>S: GET /css/style.css
+    S-->>B: CSS файл
+    B->>S: GET /js/app.js
+    S-->>B: JavaScript файл
+    B->>S: GET /images/logo.png
+    S-->>B: Изображение
+    
+    Note over U,S: Этап 7: Отображение страницы
+    B->>B: Парсинг HTML, построение DOM
+    B->>B: Применение CSS стилей
+    B->>B: Выполнение JavaScript
+    B-->>U: Отображает готовую страницу
+```
+
+## 2. Обработка статических vs динамических запросов
+
+```mermaid
+sequenceDiagram
+    participant B as Браузер
+    participant S as Веб-сервер
+    participant ASP as Статический обработчик
+    participant DHP as Динамический обработчик (PHP/Python)
+    participant DB as База данных
+    participant FS as Файловая система
+
+    Note over B,DHP: Сценарий 1: Статический запрос (CSS, изображения)
+    B->>S: GET /css/style.css
+    S->>ASP: Передает запрос статическому обработчику
+    ASP->>FS: Ищет /css/style.css
+    FS-->>ASP: Возвращает файл
+    ASP-->>S: Готовый контент
+    S-->>B: HTTP 200 + CSS файл
+
+    Note over B,DHP: Сценарий 2: Динамический запрос (PHP страница)
+    B->>S: GET /profile.php?user=123
+    S->>DHP: Передает запрос PHP обработчику
+    DHP->>DB: Запрос данных пользователя
+    DB-->>DHP: Данные пользователя
+    DHP->>DHP: Генерирует HTML на основе шаблона
+    DHP-->>S: Сгенерированный HTML
+    S-->>B: HTTP 200 + HTML страница
+```
+
+## 3. Обработка различных HTTP-статусов
+
+```mermaid
+sequenceDiagram
+    participant B as Браузер
+    participant S as Веб-сервер
+    participant FS as Файловая система
+
+    Note over B,S: Успешный запрос
+    B->>S: GET /index.html
+    S->>FS: Проверяет наличие файла
+    FS-->>S: Файл существует
+    S-->>B: HTTP 200 OK + контент
+
+    Note over B,S: Страница не найдена (404)
+    B->>S: GET /non-existent-page.html
+    S->>FS: Проверяет наличие файла
+    FS-->>S: Файл не найден
+    S-->>B: HTTP 404 Not Found
+    B->>B: Показывает страницу ошибки
+
+    Note over B,S: Перенаправление (301/302)
+    B->>S: GET /old-page.html
+    S-->>B: HTTP 301 Moved Permanently<br>Location: /new-page.html
+    B->>S: GET /new-page.html
+    S-->>B: HTTP 200 OK + контент
+
+    Note over B,S: Ошибка сервера (500)
+    B->>S: GET /buggy-script.php
+    S->>S: Выполнение скрипта вызывает ошибку
+    S-->>B: HTTP 500 Internal Server Error
+```
+
+## 4. Полный цикл с загрузкой дополнительных ресурсов
+
+```mermaid
+sequenceDiagram
+    participant U as Пользователь
+    participant B as Браузер
+    participant S as Веб-сервер
+    participant FS as Файловая система
+
+    U->>B: Заходит на site.com
+    B->>S: GET /index.html
+    S->>FS: Чтение index.html
+    FS-->>S: HTML содержимое
+    S-->>B: HTTP 200 + HTML
+    
+    B->>B: Парсит HTML, обнаруживает ресурсы
+    
+    loop Загрузка CSS
+        B->>S: GET /css/main.css
+        S->>FS: Чтение main.css
+        FS-->>S: CSS содержимое
+        S-->>B: HTTP 200 + CSS
+    end
+    
+    loop Загрузка изображений
+        B->>S: GET /images/header.jpg
+        S->>FS: Чтение header.jpg
+        FS-->>S: Изображение
+        S-->>B: HTTP 200 + JPEG
+    end
+    
+    B->>S: GET /js/app.js
+    S->>FS: Чтение app.js
+    FS-->>S: JavaScript код
+    S-->>B: HTTP 200 + JS
+    
+    B->>B: Применяет стили
+    B->>B: Выполняет JavaScript
+    B->>B: Отображает готовую страницу
+    B-->>U: Показывает интерактивный сайт
+```
+
+## 5. Работа с POST-запросами (формы, API)
+
+```mermaid
+sequenceDiagram
+    participant U as Пользователь
+    participant B as Браузер
+    participant S as Веб-сервер
+    participant APP as Веб-приложение
+    participant DB as База данных
+
+    U->>B: Заполняет форму логина
+    B->>B: Валидация формы
+    B->>S: POST /login
+    Note right of B: Тело запроса:<br>username=john<br>password=secret
+    
+    S->>APP: Передает данные формы
+    APP->>DB: Проверяет учетные данные
+    DB-->>APP: Результат проверки
+    
+    alt Успешный вход
+        APP->>DB: Создает сессию
+        DB-->>APP: ID сессии
+        APP-->>S: Редирект на /dashboard
+        S-->>B: HTTP 302 Found<br>Location: /dashboard<br>Set-Cookie: session=abc123
+        B->>S: GET /dashboard (с Cookie)
+        S-->>B: HTTP 200 + личный кабинет
+    else Ошибка входа
+        APP-->>S: Сообщение об ошибке
+        S-->>B: HTTP 200 + форма с ошибкой
+    end
+    
+    B-->>U: Показывает результат
+```
+
+## Объяснение ключевых компонентов:
+
+### Участники процессов:
+- **Браузер** - инициатор запросов
+- **DNS-сервер** - преобразует домены в IP-адреса  
+- **Веб-сервер** (Nginx/Apache) - принимает и обрабатывает запросы
+- **Файловая система** - хранит статические файлы
+- **База данных** - хранит динамические данные
+- **Веб-приложение** (PHP/Python) - обрабатывает бизнес-логику
+
+### Ключевые этапы:
+1. **DNS-резолвинг** - поиск IP по доменному имени
+2. **Установка соединения** - TCP и TLS handshake
+3. **HTTP-запрос** - основной запрос с заголовками
+4. **Обработка на сервере** - поиск файлов или выполнение кода
+5. **HTTP-ответ** - возврат результата со статусом
+6. **Рендеринг** - построение страницы в браузере
+
