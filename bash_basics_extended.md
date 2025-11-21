@@ -1743,10 +1743,7 @@ echo "Загрузка CPU: $(uptime | awk '{print $10 $11 $12}')"
 ```
 
 **Разбор пайплайна:**
-```mermaid
-flowchart LR
-    A[uptime] --> B[awk '{print $10 $11 $12}'] --> C[результат]
-```
+
 
 **Шаг 1: `uptime`**
 ```bash
