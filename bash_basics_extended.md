@@ -1767,10 +1767,7 @@ echo "Свободная память: $(free -h | grep Mem | awk '{print $4}')"
 ```
 
 **Разбор пайплайна:**
-```mermaid
-flowchart LR
-    A[free -h] --> B[grep Mem] --> C[awk '{print $4}'] --> D[результат]
-```
+
 
 **Шаг 1: `free -h`**
 ```bash
