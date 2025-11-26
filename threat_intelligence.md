@@ -137,7 +137,7 @@ curl -k https://localhost
 #### **Добавление сервера MISP для синхронизации**
 ```bash
 # Через веб-интерфейс:
-# Administration → Server Settings → Synchronization Servers → New Sync Server
+# Administration → Server Settings → Synchronization Servers → New Sync Server (нужны реквизиты сервера на которые )
 
 # Или через CLI
 sudo -u www-data /var/www/MISP/app/Console/cake Server addSyncServer \
@@ -767,3 +767,4 @@ def calculate_ti_metrics():
     
     return metrics
 ```
+
