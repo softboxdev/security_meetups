@@ -501,3 +501,588 @@
 6. **Создание дашбордов** для мониторинга compliance с 152-ФЗ
 
 Этот план дает полноценную рабочую SIEM систему, которую можно развивать и адаптировать под конкретные требования вашей организации и российского законодательства.
+
+
+---
+
+## **Архитектурная схема взаимодействия компонентов**
+
+```
+[Агенты Wazuh] 
+       ↓ (TCP 1514)
+[Wazuh Manager] → [Filebeat] → (HTTPS 9200) → [OpenSearch Cluster]
+       ↓ (TCP 1515 - для внешних логов)
+[Logstash] → [OpenSearch]
+                         ↗
+[OpenSearch Dashboards] ← (HTTPS 9200)
+```
+
+---
+
+## **ЧАСТЬ 1: Сетевые спецификации и порты**
+
+### **1.1. Таблица сетевых настроек**
+
+| Компонент | Сервер | IP-адрес | Интерфейс | VLAN |
+|-----------|---------|----------|-----------|------|
+| OpenSearch Node 1 | siem-node1 | 192.168.10.10 | ens192 | 10 |
+| OpenSearch Node 2 | siem-node2 | 192.168.10.11 | ens192 | 10 |
+| Wazuh Manager | siem-node1 | 192.168.10.10 | ens192 | 10 |
+| OpenSearch Dashboards | siem-node3 | 192.168.10.12 | ens192 | 10 |
+| Агенты | Все хосты | 192.168.0.0/16 | * | * |
+
+### **1.2. Таблица портов и протоколов**
+
+| Порт | Протокол | Назначение | Источник | Назначение |
+|------|----------|------------|----------|------------|
+| **9200** | HTTPS | OpenSearch API | Все компоненты | OpenSearch Nodes |
+| **9300** | TCP | OpenSearch Transport | siem-node1 ↔ siem-node2 | OpenSearch Nodes |
+| **5601** | HTTPS | Web-интерфейс | Пользователи | siem-node3 |
+| **1514** | TCP | Агенты → Manager | Агенты | siem-node1 |
+| **1515** | TCP/UDP | Syslog → Manager | Сетевые устройства | siem-node1 |
+| **55000** | TCP | Filebeat → OpenSearch | siem-node1 | OpenSearch Nodes |
+
+---
+
+## **ЧАСТЬ 2: Детальная настройка каждого компонента**
+
+### **2.1. OpenSearch Cluster Configuration**
+
+**На siem-node1 (192.168.10.10) - `/etc/opensearch/opensearch.yml`:**
+```yaml
+# Basic configuration
+cluster.name: siem-cluster
+node.name: siem-node1
+node.roles: [cluster_manager, data, ingest]
+
+# Network
+network.host: 192.168.10.10
+http.port: 9200
+transport.port: 9300
+
+# Discovery and cluster formation
+discovery.seed_hosts: ["192.168.10.10:9300", "192.168.10.11:9300"]
+cluster.initial_cluster_manager_nodes: ["siem-node1"]
+
+# Security (базовые настройки)
+plugins.security.ssl.transport.pemcert_filepath: node1.pem
+plugins.security.ssl.transport.pemkey_filepath: node1-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: root-ca.pem
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: node1.pem
+plugins.security.ssl.http.pemkey_filepath: node1-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: root-ca.pem
+
+# Russian language support
+i18n.locale: ru
+```
+
+**На siem-node2 (192.168.10.11) - `/etc/opensearch/opensearch.yml`:**
+```yaml
+cluster.name: siem-cluster
+node.name: siem-node2
+node.roles: [data, ingest]
+
+network.host: 192.168.10.11
+http.port: 9200
+transport.port: 9300
+
+discovery.seed_hosts: ["192.168.10.10:9300", "192.168.10.11:9300"]
+cluster.initial_cluster_manager_nodes: ["siem-node1"]
+
+# Security settings (аналогично node1)
+plugins.security.ssl.transport.pemcert_filepath: node2.pem
+# ... остальные SSL настройки
+```
+
+### **2.2. Wazuh Manager Configuration**
+
+**На siem-node1 - `/var/ossec/etc/ossec.conf`:**
+```xml
+<ossec_config>
+  <!-- Global Settings -->
+  <global>
+    <jsonout_output>yes</jsonout_output>
+    <alerts_log>yes</alerts_log>
+    <logall>no</logall>
+    <logall_json>no</logall_json>
+  </global>
+
+  <!-- Integration with OpenSearch -->
+  <integration>
+    <name>opensearch</name>
+    <hook_url>https://192.168.10.10:9200</hook_url>
+    <api_key>your-opensearch-api-key</api_key>
+    <level>3</level>
+    <alert_format>json</alert_format>
+  </integration>
+
+  <!-- Authentication Settings -->
+  <auth>
+    <disabled>no</disabled>
+    <port>1515</port>
+    <use_source_ip>no</use_source_ip>
+    <force_insert>yes</force_insert>
+    <force_time>0</force_time>
+    <purge>yes</purge>
+    <use_password>no</use_password>
+    <limit_maxagents>5000</limit_maxagents>
+    <ciphers>HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH</ciphers>
+    <!-- SSL Settings -->
+    <ssl_agent_ca>/var/ossec/etc/rootCA.pem</ssl_agent_ca>
+    <ssl_verify_host>no</ssl_verify_host>
+  </auth>
+
+  <!-- Remote Agent Communication -->
+  <remote>
+    <connection>secure</connection>
+    <port>1514</port>
+    <protocol>tcp</protocol>
+    <queue_size>131072</queue_size>
+  </remote>
+
+  <!-- Logging -->
+  <logging>
+    <log_format>json</log_format>
+  </logging>
+
+  <!-- Rules Configuration -->
+  <ruleset>
+    <rule_dir>ruleset/rules</rule_dir>
+    <rule_dir>ruleset/sca</rule_dir>
+    <rule_dir>etc/rules</rule_dir>  <!-- Кастомные правила -->
+    <list>etc/lists/audit-keys</list>
+    <email_alert_level>12</email_alert_level>
+  </ruleset>
+
+  <!-- Vulnerability Detector -->
+  <vulnerability-detector>
+    <enabled>yes</enabled>
+    <interval>5m</interval>
+    <ignore_time>6h</ignore_time>
+    <run_on_start>yes</run_on_start>
+    
+    <!-- Ubuntu OS -->
+    <provider name="canonical">
+      <enabled>yes</enabled>
+      <os>trusty</os>
+      <os>xenial</os>
+      <os>bionic</os>
+      <os>focal</os>
+      <os>jammy</os>
+      <update_interval>1h</update_interval>
+    </provider>
+
+    <!-- RedHat OS -->
+    <provider name="redhat">
+      <enabled>yes</enabled>
+      <os>5</os>
+      <os>6</os>
+      <os>7</os>
+      <os>8</os>
+      <os>9</os>
+      <update_interval>1h</update_interval>
+    </provider>
+
+    <!-- Windows OS -->
+    <provider name="msu">
+      <enabled>yes</enabled>
+      <update_interval>1h</update_interval>
+    </provider>
+  </vulnerability-detector>
+
+  <!-- Syslog Configuration (для сетевых устройств) -->
+  <localfile>
+    <location>/var/log/syslog</location>
+    <log_format>syslog</log_format>
+  </localfile>
+
+  <!-- Active Response -->
+  <active-response>
+    <disabled>no</disabled>
+    <ca_verification>no</ca_verification>
+  </active-response>
+</ossec_config>
+```
+
+### **2.3. Filebeat Configuration**
+
+**На siem-node1 - `/etc/filebeat/filebeat.yml`:**
+```yaml
+# Filebeat configuration
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /var/ossec/logs/alerts/alerts.json
+  fields:
+    log_type: wazuh_alerts
+  json.keys_under_root: true
+  json.overwrite_keys: true
+  json.add_error_key: true
+
+- type: log
+  enabled: true
+  paths:
+    - /var/ossec/logs/archives/archives.json
+  fields:
+    log_type: wazuh_archives
+
+# OpenSearch Output Configuration
+output.opensearch:
+  enabled: true
+  hosts: ["https://192.168.10.10:9200", "https://192.168.10.11:9200"]
+  protocol: "https"
+  username: "admin"
+  password: "admin"
+  ssl:
+    verification_mode: "none"
+  indices:
+    - index: "wazuh-alerts-%{+yyyy.MM.dd}"
+      when.equals:
+        fields.log_type: "wazuh_alerts"
+    - index: "wazuh-archives-%{+yyyy.MM.dd}"
+      when.equals:
+        fields.log_type: "wazuh_archives"
+
+# Setup
+setup.template:
+  name: "wazuh"
+  pattern: "wazuh-*"
+  overwrite: true
+  enabled: true
+
+setup.ilm:
+  enabled: false
+
+# Monitoring
+monitoring:
+  enabled: true
+  period: 10s
+
+# Logging
+logging:
+  level: info
+  to_files: true
+  files:
+    path: /var/log/filebeat
+    name: filebeat.log
+    keepfiles: 7
+    permissions: 0644
+```
+
+### **2.4. OpenSearch Dashboards Configuration**
+
+**На siem-node3 - `/etc/opensearch-dashboards/opensearch_dashboards.yml`:**
+```yaml
+# OpenSearch Dashboards configuration
+server.port: 5601
+server.host: "192.168.10.12"
+server.name: "siem-dashboard"
+server.ssl.enabled: true
+server.ssl.certificate: /etc/opensearch-dashboards/siem-node3.pem
+server.ssl.key: /etc/opensearch-dashboards/siem-node3-key.pem
+
+# OpenSearch connection
+opensearch.hosts: ["https://192.168.10.10:9200", "https://192.168.10.11:9200"]
+opensearch.ssl.verificationMode: none
+opensearch.username: "admin"
+opensearch.password: "admin"
+opensearch.requestHeadersWhitelist: ["securitytenant", "Authorization", "osd-xsrf"]
+
+# Security
+opensearch_security.multitenancy.enabled: true
+opensearch_security.multitenancy.tenants.preferred: ["Private", "Global"]
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+
+# Wazuh plugin
+opensearch_security.cookie.secure: true
+
+# Internationalization
+i18n.locale: "ru"
+
+# Performance
+opensearch.healthCheck.delay: 120000
+opensearch.healthCheck.startupDelay: 120000
+
+# Logging
+logging:
+  verbose: true
+  dest: /var/log/opensearch-dashboards.log
+  quiet: false
+  timezone: UTC
+```
+
+---
+
+## **ЧАСТЬ 3: Настройка агентов**
+
+### **3.1. Конфигурация агента Linux**
+
+**Файл: `/var/ossec/etc/ossec.conf` на агенте:**
+```xml
+<ossec_config>
+  <client>
+    <server>
+      <address>192.168.10.10</address>
+      <port>1514</port>
+      <protocol>tcp</protocol>
+      <queue_size>16384</queue_size>
+    </server>
+    <config_profile>linux, linux-server</config_profile>
+    <notify_time>60</notify_time>
+    <time-reconnect>300</time-reconnect>
+    <auto_restart>yes</auto_restart>
+  </client>
+
+  <logging>
+    <log_format>json</log_format>
+  </logging>
+
+  <!-- System Inventory -->
+  <syscheck>
+    <disabled>no</disabled>
+    <frequency>43200</frequency>
+    <scan_on_start>yes</scan_on_start>
+    
+    <directories check_all="yes" realtime="yes">/etc,/usr/bin,/usr/sbin</directories>
+    <directories check_all="yes" realtime="yes">/bin,/sbin</directories>
+    
+    <ignore>/etc/mtab</ignore>
+    <ignore>/etc/hosts.deny</ignore>
+    <ignore>/etc/mail/statistics</ignore>
+    <ignore>/etc/random-seed</ignore>
+    <ignore>/etc/random.seed</ignore>
+    <ignore>/etc/adjtime</ignore>
+    <ignore>/etc/httpd/logs</ignore>
+  </syscheck>
+
+  <!-- Rootkit Detection -->
+  <rootcheck>
+    <disabled>no</disabled>
+    <check_unixaudit>yes</check_unixaudit>
+    <check_files>yes</check_files>
+    <check_trojans>yes</check_trojans>
+    <check_dev>yes</check_dev>
+    <check_sys>yes</check_sys>
+    <check_pids>yes</check_pids>
+    <check_ports>yes</check_ports>
+    <check_if>yes</check_if>
+    <frequency>43200</frequency>
+  </rootcheck>
+
+  <!-- Log Monitoring -->
+  <localfile>
+    <location>/var/log/syslog</location>
+    <log_format>syslog</log_format>
+  </localfile>
+
+  <localfile>
+    <location>/var/log/auth.log</location>
+    <log_format>syslog</log_format>
+  </localfile>
+
+  <!-- Active Response -->
+  <active-response>
+    <disabled>no</disabled>
+    <ca_verification>yes</ca_verification>
+  </active-response>
+</ossec_config>
+```
+
+### **3.2. Регистрация агента**
+```bash
+# На агенте выполняем:
+/var/ossec/bin/agent-auth -A "web-server-01" -m 192.168.10.10 -P "SecurePassword123!"
+
+# Проверяем статус
+systemctl status wazuh-agent
+/var/ossec/bin/agent_control -l
+```
+
+---
+
+## **ЧАСТЬ 4: Настройка системных служб и firewall**
+
+### **4.1. Firewall Rules (UFW) на siem-node1**
+```bash
+# OpenSSH
+sudo ufw allow from 192.168.0.0/16 to any port 22
+
+# Wazuh Agents
+sudo ufw allow from 192.168.0.0/16 to any port 1514
+sudo ufw allow from 192.168.0.0/16 to any port 1515
+
+# OpenSearch
+sudo ufw allow from 192.168.10.0/24 to any port 9200
+sudo ufw allow from 192.168.10.0/24 to any port 9300
+
+# Filebeat
+sudo ufw allow from 192.168.10.10 to any port 5044
+
+# Enable firewall
+sudo ufw enable
+```
+
+### **4.2. Systemd Services**
+
+**OpenSearch Service - `/etc/systemd/system/opensearch.service`:**
+```ini
+[Unit]
+Description=OpenSearch
+Documentation=https://opensearch.org/
+After=network.target
+
+[Service]
+Type=simple
+User=opensearch
+Group=opensearch
+WorkingDirectory=/usr/share/opensearch
+ExecStart=/usr/share/opensearch/bin/opensearch
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Wazuh Manager Service - проверка конфигурации:**
+```bash
+systemctl cat wazuh-manager
+# Output должен содержать:
+# ExecStart=/var/ossec/bin/wazuh-manager
+# Restart=on-failure
+# RestartSec=10s
+```
+
+---
+
+## **ЧАСТЬ 5: Проверка работоспособности**
+
+### **5.1. Проверка соединений между компонентами**
+
+```bash
+# Проверка OpenSearch кластера
+curl -XGET 'https://192.168.10.10:9200/_cluster/health?pretty' -u 'admin:admin' -k
+
+# Проверка индексов
+curl -XGET 'https://192.168.10.10:9200/_cat/indices?v' -u 'admin:admin' -k
+
+# Проверка подключенных агентов
+/var/ossec/bin/agent_control -l
+
+# Проверка статуса Filebeat
+systemctl status filebeat
+journalctl -u filebeat -f
+
+# Проверка логов Wazuh Manager
+tail -f /var/ossec/logs/ossec.log
+```
+
+### **5.2. Мониторинг сети**
+```bash
+# Проверка открытых портов
+netstat -tlnp | grep -E '(9200|9300|1514|1515|5601)'
+
+# Проверка соединений
+ss -tulpn | grep -E '(9200|9300|1514|1515|5601)'
+
+# Мониторинг трафика
+tcpdump -i ens192 port 1514 or port 9200 -n
+```
+
+### **5.3. Логи для диагностики**
+
+**Wazuh Manager лог:**
+```bash
+tail -f /var/ossec/logs/ossec.log | grep -E "(ERROR|WARNING|connected)"
+```
+
+**OpenSearch лог:**
+```bash
+tail -f /var/log/opensearch/siem-cluster.log
+```
+
+**Filebeat лог:**
+```bash
+tail -f /var/log/filebeat/filebeat
+```
+
+---
+
+## **ЧАСТЬ 6: Источники конфигураций и документация**
+
+### **6.1. Официальная документация:**
+- **Wazuh**: https://documentation.wazuh.com/current/
+- **OpenSearch**: https://opensearch.org/docs/latest/
+- **Filebeat**: https://www.elastic.co/guide/en/beats/filebeat/current/index.html
+
+### **6.2. Критические файлы конфигурации:**
+- `/var/ossec/etc/ossec.conf` - главный конфиг Wazuh
+- `/etc/opensearch/opensearch.yml` - конфиг OpenSearch  
+- `/etc/opensearch-dashboards/opensearch_dashboards.yml` - конфиг Dashboards
+- `/etc/filebeat/filebeat.yml` - конфиг Filebeat
+
+### **6.3. Полезные команды для диагностики:**
+```bash
+# Проверка всех служб
+systemctl status opensearch wazuh-manager filebeat opensearch-dashboards
+
+# Проверка логов в реальном времени
+tail -f /var/ossec/logs/alerts/alerts.json | jq '.'
+
+# Проверка нагрузки на OpenSearch
+curl -XGET 'https://192.168.10.10:9200/_nodes/stats?pretty' -u 'admin:admin' -k
+
+# Тестирование правил Wazuh
+/var/ossec/bin/wazuh-logtest
+```
+
+Эта конфигурация обеспечит надежное взаимодействие всех компонентов SIEM системы с правильной маршрутизацией данных и отказоустойчивостью.
+
+Подборка справочных материалов, документации и практических ресурсов, которые помогут вам в развертывании и настройке SIEM-системы на основе Wazuh и OpenSearch.
+
+### 📚 Официальная документация и практические руководства
+
+Это основа для работы с рассмотренными технологиями. Официальная документация содержит самые актуальные и достоверные сведения.
+
+| Ресурс | Описание |
+| :--- | :--- |
+| [Документация Wazuh: Интеграция с Elastic Stack](https://documentation.wazuh.com/current/integrations-guide/elastic-stack/index.html)  | Подробное руководство по интеграции Wazuh с Elastic Stack (включая OpenSearch) с использованием Logstash. Содержит инструкции по установке, настройке конвейеров и шаблонов индексов. |
+| [Документация Wazuh: Пользовательские правила](https://documentation.wazuh.com/current/user-manual/ruleset/rules/custom.html)  | Исчерпывающее руководство по созданию собственных правил для Wazuh. Включает примеры, объяснение синтаксиса и важные предупреждения о совместимости. |
+| [Синтаксис правил Wazuh](https://documentation.wazuh.com/current/user-manual/ruleset/ruleset-xml-syntax/rules.html)  | Справочник по всем XML-тегам и параметрам, используемым для создания правил. Незаменим при написании сложных условий. |
+| [Блог Wazuh: Расширение возможностей с помощью Elastic Stack](https://wazuh.com/blog/detection-with-elastic-stack-integration/)  | Практический пример использования связки Wazuh и Elastic Stack для обеспечения соответствия требованиям PCI DSS. |
+
+### 🛠️ Ключевые аспекты настройки и практического применения
+
+Для эффективного использования этих материалов стоит сосредоточиться на нескольких ключевых областях.
+
+- **Создание пользовательских правил обнаружения угроз**
+    - **Используйте правильный диапазон идентификаторов:** Для кастомных правил применяйте ID от `100000` до `120000`, чтобы избежать конфликтов с системными правилами .
+    - **Структурируйте правила:** Помещайте правила в группы (`<group name="...">`) для логической организации и удобной фильтрации в дашбордах .
+    - **Модификация существующих правил:** Чтобы изменить встроенное правило, скопируйте его в файл `/var/ossec/etc/rules/local_rules.xml` и добавьте атрибут `overwrite="yes"`. Это гарантирует, что ваши изменения не будут потеряны при обновлении системы .
+    - **Пример практического правила:** Для пометки потенциальных ложных срабатываний от Suricata можно создать дочернее правило, которое добавляет информативный тег .
+    ```xml
+    <group name="ids,suricata,custom,possible_false_positive,">
+      <rule id="100500" level="3">
+        <if_sid>86601</if_sid>
+        <field name="alert.signature">GPL ICMP_INFO PING</field>
+        <description>Suricata: Alert - $(alert.signature)</description>
+        <info type="text">Possible False Positive</info>
+        <options>no_full_log</options>
+      </rule>
+    </group>
+    ```
+
+- **Настройка конвейеров данных и интеграций**
+    - **Роль Logstash:** Logstash обеспечивает гибкость для сложной обработки данных перед их отправкой в хранилище (обогащение, фильтрация, маршрутизация в разные индексы) .
+    - **Безопасное хранение секретов:** Используйте встроенное хранилище секретов Logstash (keystore) для безопасного управления учетными данными к базам данных, а не хранения их в plaintext-файлах .
+    - **Настройка шаблонов индексов:** Заранее настраивайте маппинги для индексов OpenSearch/Elasticsearch. Шаблон от Wazuh автоматически увеличивает лимит на количество полей до 10000, что необходимо для корректного отображения всех данных .
+
+### 💡 Дополнительные ресурсы для углубленного изучения
+
+- **Пример базового развертывания:** Репозиторий [`mriazx/wazuh-setup`](https://github.com/mriazx/wazuh-setup) на GitHub может служить как отправная точка для понимания общей архитектуры развертывания .
+- **Сообщество и поддержка:** Для решения специфических проблем используйте [Группы рассылки Wazuh](https://groups.google.com/g/wazuh). Это место, где можно задать вопрос и поучиться на реальных кейсах других пользователей .
+
