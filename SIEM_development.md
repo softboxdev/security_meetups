@@ -505,428 +505,106 @@
 
 ---
 
-## **Архитектурная схема взаимодействия компонентов**
+---
 
+## **Детальная настройка взаимодействия компонентов SIEM**
+
+### **1. Сетевая архитектура и план адресации**
+
+**Предполагаемая сеть:** `192.168.1.0/24`
+
+| Сервер | IP адрес | Hostname | Роли | Критические порты |
+|--------|-----------|-----------|-------|-------------------|
+| **siem-node1** | `192.168.1.10` | `siem-node1.local` | Wazuh Manager + OpenSearch Master | 9200, 9300, 1514, 1515, 55000 |
+| **siem-node2** | `192.168.1.11` | `siem-node2.local` | OpenSearch Data Node | 9200, 9300 |
+| **siem-node3** | `192.168.1.12` | `siem-node3.local` | OpenSearch Dashboards | 5601 |
+| **Агенты** | `192.168.1.100-200` | - | Wazuh Agents | 1514 (outbound) |
+
+---
+
+### **2. Подготовка DNS / hosts файлов**
+
+**На всех серверах правим `/etc/hosts`:**
+```bash
+sudo vim /etc/hosts
+
+# Добавляем строки:
+192.168.1.10 siem-node1 siem-node1.local
+192.168.1.11 siem-node2 siem-node2.local  
+192.168.1.12 siem-node3 siem-node3.local
 ```
-[Агенты Wazuh] 
-       ↓ (TCP 1514)
-[Wazuh Manager] → [Filebeat] → (HTTPS 9200) → [OpenSearch Cluster]
-       ↓ (TCP 1515 - для внешних логов)
-[Logstash] → [OpenSearch]
-                         ↗
-[OpenSearch Dashboards] ← (HTTPS 9200)
+
+**Проверяем разрешение имен:**
+```bash
+ping siem-node1.local
+ping siem-node2.local
+ping siem-node3.local
 ```
 
 ---
 
-## **ЧАСТЬ 1: Сетевые спецификации и порты**
+### **3. Настройка OpenSearch кластера**
 
-### **1.1. Таблица сетевых настроек**
+#### **3.1. Конфигурация siem-node1 (`/usr/share/opensearch/config/opensearch.yml`)**
 
-| Компонент | Сервер | IP-адрес | Интерфейс | VLAN |
-|-----------|---------|----------|-----------|------|
-| OpenSearch Node 1 | siem-node1 | 192.168.10.10 | ens192 | 10 |
-| OpenSearch Node 2 | siem-node2 | 192.168.10.11 | ens192 | 10 |
-| Wazuh Manager | siem-node1 | 192.168.10.10 | ens192 | 10 |
-| OpenSearch Dashboards | siem-node3 | 192.168.10.12 | ens192 | 10 |
-| Агенты | Все хосты | 192.168.0.0/16 | * | * |
-
-### **1.2. Таблица портов и протоколов**
-
-| Порт | Протокол | Назначение | Источник | Назначение |
-|------|----------|------------|----------|------------|
-| **9200** | HTTPS | OpenSearch API | Все компоненты | OpenSearch Nodes |
-| **9300** | TCP | OpenSearch Transport | siem-node1 ↔ siem-node2 | OpenSearch Nodes |
-| **5601** | HTTPS | Web-интерфейс | Пользователи | siem-node3 |
-| **1514** | TCP | Агенты → Manager | Агенты | siem-node1 |
-| **1515** | TCP/UDP | Syslog → Manager | Сетевые устройства | siem-node1 |
-| **55000** | TCP | Filebeat → OpenSearch | siem-node1 | OpenSearch Nodes |
-
----
-
-## **ЧАСТЬ 2: Детальная настройка каждого компонента**
-
-### **2.1. OpenSearch Cluster Configuration**
-
-**На siem-node1 (192.168.10.10) - `/etc/opensearch/opensearch.yml`:**
 ```yaml
-# Basic configuration
+# Basic cluster configuration
 cluster.name: siem-cluster
 node.name: siem-node1
 node.roles: [cluster_manager, data, ingest]
 
-# Network
-network.host: 192.168.10.10
+# Network settings
+network.host: 0.0.0.0
 http.port: 9200
 transport.port: 9300
 
 # Discovery and cluster formation
-discovery.seed_hosts: ["192.168.10.10:9300", "192.168.10.11:9300"]
+discovery.seed_hosts: ["siem-node1:9300", "siem-node2:9300"]
 cluster.initial_cluster_manager_nodes: ["siem-node1"]
 
-# Security (базовые настройки)
+# Security configuration (basic authentication)
 plugins.security.ssl.transport.pemcert_filepath: node1.pem
 plugins.security.ssl.transport.pemkey_filepath: node1-key.pem
 plugins.security.ssl.transport.pemtrustedcas_filepath: root-ca.pem
-plugins.security.ssl.http.enabled: true
-plugins.security.ssl.http.pemcert_filepath: node1.pem
-plugins.security.ssl.http.pemkey_filepath: node1-key.pem
-plugins.security.ssl.http.pemtrustedcas_filepath: root-ca.pem
+plugins.security.ssl.http.enabled: false  # Отключаем для начальной настройки
 
-# Russian language support
-i18n.locale: ru
+# Performance optimization
+bootstrap.memory_lock: true
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
+
+# Russian market compliance - индексы по месяцам
+action.auto_create_index: ".opendistro-alerting-config,.opendistro-alerting-alert*,-*"
 ```
 
-**На siem-node2 (192.168.10.11) - `/etc/opensearch/opensearch.yml`:**
+#### **3.2. Конфигурация siem-node2 (`/usr/share/opensearch/config/opensearch.yml`)**
+
 ```yaml
 cluster.name: siem-cluster
 node.name: siem-node2
-node.roles: [data, ingest]
+node.roles: [data, ingest]  # Только data node
 
-network.host: 192.168.10.11
+# Network settings
+network.host: 0.0.0.0
 http.port: 9200
 transport.port: 9300
 
-discovery.seed_hosts: ["192.168.10.10:9300", "192.168.10.11:9300"]
+# Discovery
+discovery.seed_hosts: ["siem-node1:9300", "siem-node2:9300"]
 cluster.initial_cluster_manager_nodes: ["siem-node1"]
 
-# Security settings (аналогично node1)
-plugins.security.ssl.transport.pemcert_filepath: node2.pem
-# ... остальные SSL настройки
-```
-
-### **2.2. Wazuh Manager Configuration**
-
-**На siem-node1 - `/var/ossec/etc/ossec.conf`:**
-```xml
-<ossec_config>
-  <!-- Global Settings -->
-  <global>
-    <jsonout_output>yes</jsonout_output>
-    <alerts_log>yes</alerts_log>
-    <logall>no</logall>
-    <logall_json>no</logall_json>
-  </global>
-
-  <!-- Integration with OpenSearch -->
-  <integration>
-    <name>opensearch</name>
-    <hook_url>https://192.168.10.10:9200</hook_url>
-    <api_key>your-opensearch-api-key</api_key>
-    <level>3</level>
-    <alert_format>json</alert_format>
-  </integration>
-
-  <!-- Authentication Settings -->
-  <auth>
-    <disabled>no</disabled>
-    <port>1515</port>
-    <use_source_ip>no</use_source_ip>
-    <force_insert>yes</force_insert>
-    <force_time>0</force_time>
-    <purge>yes</purge>
-    <use_password>no</use_password>
-    <limit_maxagents>5000</limit_maxagents>
-    <ciphers>HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH</ciphers>
-    <!-- SSL Settings -->
-    <ssl_agent_ca>/var/ossec/etc/rootCA.pem</ssl_agent_ca>
-    <ssl_verify_host>no</ssl_verify_host>
-  </auth>
-
-  <!-- Remote Agent Communication -->
-  <remote>
-    <connection>secure</connection>
-    <port>1514</port>
-    <protocol>tcp</protocol>
-    <queue_size>131072</queue_size>
-  </remote>
-
-  <!-- Logging -->
-  <logging>
-    <log_format>json</log_format>
-  </logging>
-
-  <!-- Rules Configuration -->
-  <ruleset>
-    <rule_dir>ruleset/rules</rule_dir>
-    <rule_dir>ruleset/sca</rule_dir>
-    <rule_dir>etc/rules</rule_dir>  <!-- Кастомные правила -->
-    <list>etc/lists/audit-keys</list>
-    <email_alert_level>12</email_alert_level>
-  </ruleset>
-
-  <!-- Vulnerability Detector -->
-  <vulnerability-detector>
-    <enabled>yes</enabled>
-    <interval>5m</interval>
-    <ignore_time>6h</ignore_time>
-    <run_on_start>yes</run_on_start>
-    
-    <!-- Ubuntu OS -->
-    <provider name="canonical">
-      <enabled>yes</enabled>
-      <os>trusty</os>
-      <os>xenial</os>
-      <os>bionic</os>
-      <os>focal</os>
-      <os>jammy</os>
-      <update_interval>1h</update_interval>
-    </provider>
-
-    <!-- RedHat OS -->
-    <provider name="redhat">
-      <enabled>yes</enabled>
-      <os>5</os>
-      <os>6</os>
-      <os>7</os>
-      <os>8</os>
-      <os>9</os>
-      <update_interval>1h</update_interval>
-    </provider>
-
-    <!-- Windows OS -->
-    <provider name="msu">
-      <enabled>yes</enabled>
-      <update_interval>1h</update_interval>
-    </provider>
-  </vulnerability-detector>
-
-  <!-- Syslog Configuration (для сетевых устройств) -->
-  <localfile>
-    <location>/var/log/syslog</location>
-    <log_format>syslog</log_format>
-  </localfile>
-
-  <!-- Active Response -->
-  <active-response>
-    <disabled>no</disabled>
-    <ca_verification>no</ca_verification>
-  </active-response>
-</ossec_config>
-```
-
-### **2.3. Filebeat Configuration**
-
-**На siem-node1 - `/etc/filebeat/filebeat.yml`:**
-```yaml
-# Filebeat configuration
-filebeat.inputs:
-- type: log
-  enabled: true
-  paths:
-    - /var/ossec/logs/alerts/alerts.json
-  fields:
-    log_type: wazuh_alerts
-  json.keys_under_root: true
-  json.overwrite_keys: true
-  json.add_error_key: true
-
-- type: log
-  enabled: true
-  paths:
-    - /var/ossec/logs/archives/archives.json
-  fields:
-    log_type: wazuh_archives
-
-# OpenSearch Output Configuration
-output.opensearch:
-  enabled: true
-  hosts: ["https://192.168.10.10:9200", "https://192.168.10.11:9200"]
-  protocol: "https"
-  username: "admin"
-  password: "admin"
-  ssl:
-    verification_mode: "none"
-  indices:
-    - index: "wazuh-alerts-%{+yyyy.MM.dd}"
-      when.equals:
-        fields.log_type: "wazuh_alerts"
-    - index: "wazuh-archives-%{+yyyy.MM.dd}"
-      when.equals:
-        fields.log_type: "wazuh_archives"
-
-# Setup
-setup.template:
-  name: "wazuh"
-  pattern: "wazuh-*"
-  overwrite: true
-  enabled: true
-
-setup.ilm:
-  enabled: false
-
-# Monitoring
-monitoring:
-  enabled: true
-  period: 10s
-
-# Logging
-logging:
-  level: info
-  to_files: true
-  files:
-    path: /var/log/filebeat
-    name: filebeat.log
-    keepfiles: 7
-    permissions: 0644
-```
-
-### **2.4. OpenSearch Dashboards Configuration**
-
-**На siem-node3 - `/etc/opensearch-dashboards/opensearch_dashboards.yml`:**
-```yaml
-# OpenSearch Dashboards configuration
-server.port: 5601
-server.host: "192.168.10.12"
-server.name: "siem-dashboard"
-server.ssl.enabled: true
-server.ssl.certificate: /etc/opensearch-dashboards/siem-node3.pem
-server.ssl.key: /etc/opensearch-dashboards/siem-node3-key.pem
-
-# OpenSearch connection
-opensearch.hosts: ["https://192.168.10.10:9200", "https://192.168.10.11:9200"]
-opensearch.ssl.verificationMode: none
-opensearch.username: "admin"
-opensearch.password: "admin"
-opensearch.requestHeadersWhitelist: ["securitytenant", "Authorization", "osd-xsrf"]
-
-# Security
-opensearch_security.multitenancy.enabled: true
-opensearch_security.multitenancy.tenants.preferred: ["Private", "Global"]
-opensearch_security.readonly_mode.roles: ["kibana_read_only"]
-
-# Wazuh plugin
-opensearch_security.cookie.secure: true
-
-# Internationalization
-i18n.locale: "ru"
+# Security (аналогично node1)
+plugins.security.ssl.http.enabled: false
 
 # Performance
-opensearch.healthCheck.delay: 120000
-opensearch.healthCheck.startupDelay: 120000
-
-# Logging
-logging:
-  verbose: true
-  dest: /var/log/opensearch-dashboards.log
-  quiet: false
-  timezone: UTC
+bootstrap.memory_lock: true
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
 ```
 
----
+#### **3.3. Настройка системных лимитов**
 
-## **ЧАСТЬ 3: Настройка агентов**
-
-### **3.1. Конфигурация агента Linux**
-
-**Файл: `/var/ossec/etc/ossec.conf` на агенте:**
-```xml
-<ossec_config>
-  <client>
-    <server>
-      <address>192.168.10.10</address>
-      <port>1514</port>
-      <protocol>tcp</protocol>
-      <queue_size>16384</queue_size>
-    </server>
-    <config_profile>linux, linux-server</config_profile>
-    <notify_time>60</notify_time>
-    <time-reconnect>300</time-reconnect>
-    <auto_restart>yes</auto_restart>
-  </client>
-
-  <logging>
-    <log_format>json</log_format>
-  </logging>
-
-  <!-- System Inventory -->
-  <syscheck>
-    <disabled>no</disabled>
-    <frequency>43200</frequency>
-    <scan_on_start>yes</scan_on_start>
-    
-    <directories check_all="yes" realtime="yes">/etc,/usr/bin,/usr/sbin</directories>
-    <directories check_all="yes" realtime="yes">/bin,/sbin</directories>
-    
-    <ignore>/etc/mtab</ignore>
-    <ignore>/etc/hosts.deny</ignore>
-    <ignore>/etc/mail/statistics</ignore>
-    <ignore>/etc/random-seed</ignore>
-    <ignore>/etc/random.seed</ignore>
-    <ignore>/etc/adjtime</ignore>
-    <ignore>/etc/httpd/logs</ignore>
-  </syscheck>
-
-  <!-- Rootkit Detection -->
-  <rootcheck>
-    <disabled>no</disabled>
-    <check_unixaudit>yes</check_unixaudit>
-    <check_files>yes</check_files>
-    <check_trojans>yes</check_trojans>
-    <check_dev>yes</check_dev>
-    <check_sys>yes</check_sys>
-    <check_pids>yes</check_pids>
-    <check_ports>yes</check_ports>
-    <check_if>yes</check_if>
-    <frequency>43200</frequency>
-  </rootcheck>
-
-  <!-- Log Monitoring -->
-  <localfile>
-    <location>/var/log/syslog</location>
-    <log_format>syslog</log_format>
-  </localfile>
-
-  <localfile>
-    <location>/var/log/auth.log</location>
-    <log_format>syslog</log_format>
-  </localfile>
-
-  <!-- Active Response -->
-  <active-response>
-    <disabled>no</disabled>
-    <ca_verification>yes</ca_verification>
-  </active-response>
-</ossec_config>
-```
-
-### **3.2. Регистрация агента**
-```bash
-# На агенте выполняем:
-/var/ossec/bin/agent-auth -A "web-server-01" -m 192.168.10.10 -P "SecurePassword123!"
-
-# Проверяем статус
-systemctl status wazuh-agent
-/var/ossec/bin/agent_control -l
-```
-
----
-
-## **ЧАСТЬ 4: Настройка системных служб и firewall**
-
-### **4.1. Firewall Rules (UFW) на siem-node1**
-```bash
-# OpenSSH
-sudo ufw allow from 192.168.0.0/16 to any port 22
-
-# Wazuh Agents
-sudo ufw allow from 192.168.0.0/16 to any port 1514
-sudo ufw allow from 192.168.0.0/16 to any port 1515
-
-# OpenSearch
-sudo ufw allow from 192.168.10.0/24 to any port 9200
-sudo ufw allow from 192.168.10.0/24 to any port 9300
-
-# Filebeat
-sudo ufw allow from 192.168.10.10 to any port 5044
-
-# Enable firewall
-sudo ufw enable
-```
-
-### **4.2. Systemd Services**
-
-**OpenSearch Service - `/etc/systemd/system/opensearch.service`:**
+**На всех узлах OpenSearch создаем `/etc/systemd/system/opensearch.service`:**
 ```ini
 [Unit]
 Description=OpenSearch
@@ -941,106 +619,397 @@ WorkingDirectory=/usr/share/opensearch
 ExecStart=/usr/share/opensearch/bin/opensearch
 Restart=always
 RestartSec=3
-LimitNOFILE=65536
 LimitMEMLOCK=infinity
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**Wazuh Manager Service - проверка конфигурации:**
+**Настройка ulimits (`/etc/security/limits.conf`):**
 ```bash
-systemctl cat wazuh-manager
-# Output должен содержать:
-# ExecStart=/var/ossec/bin/wazuh-manager
-# Restart=on-failure
-# RestartSec=10s
+opensearch soft memlock unlimited
+opensearch hard memlock unlimited
+opensearch soft nofile 65536
+opensearch hard nofile 65536
+opensearch soft nproc 4096
+opensearch hard nproc 4096
 ```
 
 ---
 
-## **ЧАСТЬ 5: Проверка работоспособности**
+### **4. Настройка Wazuh Manager на siem-node1**
 
-### **5.1. Проверка соединений между компонентами**
+#### **4.1. Основная конфигурация (`/var/ossec/etc/ossec.conf`)**
+
+```xml
+<ossec_config>
+  <!-- Global Settings -->
+  <global>
+    <jsonout_output>yes</jsonout_output>
+    <alerts_log>yes</alerts_log>
+    <logall>no</logall>
+    <logall_json>no</logall_json>
+  </global>
+
+  <!-- Integration with OpenSearch -->
+  <integration>
+    <name>opensearch</name>
+    <hook_url>http://localhost:9200</hook_url>
+    <level>3</level>
+    <alert_format>json</alert_format>
+  </integration>
+
+  <!-- Email notifications (Russian SMTP) -->
+  <global>
+    <email_notification>yes</email_notification>
+    <smtp_server>smtp.yandex.ru</smtp_server>
+    <smtp_port>587</smtp_port>
+    <email_from>siem@yourcompany.ru</email_from>
+    <smtp_username>siem@yourcompany.ru</smtp_username>
+    <smtp_password>your_password</smtp_password>
+    <email_to>security-team@yourcompany.ru</email_to>
+  </global>
+
+  <!-- Remote agent communication -->
+  <remote>
+    <connection>secure</connection>
+    <port>1514</port>
+    <protocol>tcp</protocol>
+    <allowed-ips>192.168.1.0/24</allowed-ips>
+  </remote>
+
+  <!-- Local file monitoring -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/auth.log</location>
+  </localfile>
+
+  <!-- Active Response -->
+  <command>
+    <name>firewall-drop</name>
+    <executable>firewall-drop.sh</executable>
+    <expect>srcip</expect>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <level>10</level>
+    <timeout>600</timeout>
+  </active-response>
+</ossec_config>
+```
+
+#### **4.2. Настройка Filebeat для интеграции с OpenSearch**
+
+**Конфигурация (`/etc/filebeat/filebeat.yml`):**
+
+```yaml
+# Filebeat configuration for Wazuh
+filebeat.modules:
+  - module: wazuh
+    alerts:
+      enabled: true
+      var.paths: ["/var/ossec/logs/alerts/alerts.json"]
+    archives:
+      enabled: false
+
+# OpenSearch output configuration
+output.opensearch:
+  hosts: ["192.168.1.10:9200", "192.168.1.11:9200"]
+  protocol: "https"
+  username: "admin"
+  password: "admin"
+  ssl:
+    certificate_authorities: ["/etc/filebeat/root-ca.pem"]
+    certificate: "/etc/filebeat/filebeat.pem"
+    key: "/etc/filebeat/filebeat-key.pem"
+    verification_mode: "full"
+
+# Setup
+setup.template.enabled: true
+setup.template.name: "wazuh"
+setup.template.pattern: "wazuh-alerts-4.x-*"
+setup.ilm.enabled: false
+
+# Logging
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+```
+
+---
+
+### **5. Настройка OpenSearch Dashboards на siem-node3**
+
+#### **5.1. Конфигурация (`/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml`)**
+
+```yaml
+# Server settings
+server.port: 5601
+server.host: "0.0.0.0"
+server.name: "siem-dashboard"
+server.ssl.enabled: false
+
+# OpenSearch connection
+opensearch.hosts: ["http://192.168.1.10:9200", "http://192.168.1.11:9200"]
+opensearch.ssl.verificationMode: none
+opensearch.username: "admin"
+opensearch.password: "admin"
+opensearch.requestHeadersWhitelist: ["securitytenant", "Authorization"]
+
+# Security plugin
+opensearch_security.multitenancy.enabled: true
+opensearch_security.multitenancy.tenants.preferred: ["Private", "Global"]
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+
+# Internationalization
+i18n.locale: "ru"
+
+# Wazuh plugin configuration
+wazuh.security.enabled: true
+wazuh.security.xpack.rbac.enabled: true
+
+# Performance
+opensearch.healthCheck.delay: 120000
+opensearch.initialRetryDelay: 10000
+opensearch.maxRetryDelay: 120000
+
+# Logging
+logging.verbose: true
+logging.dest: /var/log/opensearch-dashboards.log
+```
+
+#### **5.2. Systemd служба для OpenSearch Dashboards**
+
+**Создаем `/etc/systemd/system/opensearch-dashboards.service`:**
+```ini
+[Unit]
+Description=OpenSearch Dashboards
+Documentation=https://opensearch.org/
+After=network.target
+
+[Service]
+Type=simple
+User=opensearch-dashboards
+Group=opensearch-dashboards
+WorkingDirectory=/usr/share/opensearch-dashboards
+Environment=NODE_ENV=production
+Environment=OPENSEARCH_HOSTS=http://192.168.1.10:9200
+ExecStart=/usr/share/opensearch-dashboards/bin/opensearch-dashboards
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+---
+
+### **6. Настройка межсерверного взаимодействия**
+
+#### **6.1. Настройка firewall (UFW) на всех серверах**
+
+**На siem-node1:**
+```bash
+sudo ufw enable
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# OpenSearch ports
+sudo ufw allow from 192.168.1.0/24 to any port 9200
+sudo ufw allow from 192.168.1.0/24 to any port 9300
+
+# Wazuh Manager ports
+sudo ufw allow from 192.168.1.0/24 to any port 1514
+sudo ufw allow from 192.168.1.0/24 to any port 1515
+sudo ufw allow from 192.168.1.0/24 to any port 55000
+
+# SSH access
+sudo ufw allow from 192.168.1.0/24 to any port 22
+```
+
+**На siem-node2:**
+```bash
+sudo ufw enable
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# OpenSearch ports
+sudo ufw allow from 192.168.1.0/24 to any port 9200
+sudo ufw allow from 192.168.1.0/24 to any port 9300
+sudo ufw allow from 192.168.1.12 to any port 5601
+
+# SSH access
+sudo ufw allow from 192.168.1.0/24 to any port 22
+```
+
+**На siem-node3:**
+```bash
+sudo ufw enable
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# OpenSearch Dashboards port
+sudo ufw allow from 192.168.1.0/24 to any port 5601
+
+# SSH access
+sudo ufw allow from 192.168.1.0/24 to any port 22
+```
+
+#### **6.2. Проверка сетевой связности**
+
+**Скрипт проверки (`check_connectivity.sh`):**
+```bash
+#!/bin/bash
+
+echo "=== Checking SIEM Cluster Connectivity ==="
+
+# Check from siem-node1
+echo "1. Checking OpenSearch cluster..."
+curl -X GET "http://192.168.1.10:9200/_cluster/health?pretty"
+curl -X GET "http://192.168.1.11:9200/_cluster/health?pretty"
+
+echo "2. Checking Wazuh Manager..."
+telnet 192.168.1.10 1514
+
+echo "3. Checking OpenSearch Dashboards..."
+curl -X GET "http://192.168.1.12:5601/api/status"
+
+echo "4. Checking node connectivity..."
+ping -c 2 siem-node2.local
+ping -c 2 siem-node3.local
+
+echo "=== Connectivity Check Complete ==="
+```
+
+---
+
+### **7. Настройка резервного копирования и мониторинга**
+
+#### **7.1. Резервное копирование конфигураций**
+
+**Скрипт бэкапа (`/opt/scripts/backup_siem_config.sh`):**
+```bash
+#!/bin/bash
+BACKUP_DIR="/backup/siem-config"
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Create backup directory
+mkdir -p $BACKUP_DIR/$DATE
+
+# Backup Wazuh configuration
+cp -r /var/ossec/etc $BACKUP_DIR/$DATE/wazuh-etc
+cp -r /var/ossec/ruleset $BACKUP_DIR/$DATE/wazuh-ruleset
+
+# Backup OpenSearch configuration
+cp -r /usr/share/opensearch/config $BACKUP_DIR/$DATE/opensearch-config
+
+# Backup OpenSearch Dashboards configuration  
+cp -r /usr/share/opensearch-dashboards/config $BACKUP_DIR/$DATE/dashboards-config
+
+# Create archive
+tar -czf $BACKUP_DIR/siem_backup_$DATE.tar.gz $BACKUP_DIR/$DATE
+
+# Cleanup old backups (keep 7 days)
+find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
+
+echo "Backup completed: $BACKUP_DIR/siem_backup_$DATE.tar.gz"
+```
+
+#### **7.2. Мониторинг состояния кластера**
+
+**Скрипт мониторинга (`/opt/scripts/monitor_siem_cluster.sh`):**
+```bash
+#!/bin/bash
+
+# Check OpenSearch cluster health
+CLUSTER_HEALTH=$(curl -s -X GET "http://192.168.1.10:9200/_cluster/health" | jq -r '.status')
+if [ "$CLUSTER_HEALTH" != "green" ]; then
+    echo "ALERT: OpenSearch cluster status is $CLUSTER_HEALTH" | mail -s "SIEM Alert" security-team@yourcompany.ru
+fi
+
+# Check Wazuh Manager
+if ! systemctl is-active --quiet wazuh-manager; then
+    echo "ALERT: Wazuh Manager is down" | mail -s "SIEM Alert" security-team@yourcompany.ru
+fi
+
+# Check OpenSearch Dashboards
+if ! curl -s http://192.168.1.12:5601 > /dev/null; then
+    echo "ALERT: OpenSearch Dashboards is down" | mail -s "SIEM Alert" security-team@yourcompany.ru
+fi
+
+# Check disk space
+DISK_USAGE=$(df / | awk 'END{print $5}' | sed 's/%//')
+if [ $DISK_USAGE -gt 80 ]; then
+    echo "ALERT: Disk usage is $DISK_USAGE%" | mail -s "SIEM Alert" security-team@yourcompany.ru
+fi
+```
+
+---
+
+### **8. Порядок запуска системы**
+
+#### **8.1. Последовательность запуска сервисов**
 
 ```bash
-# Проверка OpenSearch кластера
-curl -XGET 'https://192.168.10.10:9200/_cluster/health?pretty' -u 'admin:admin' -k
+# На siem-node1 и siem-node2:
+sudo systemctl start opensearch
+sudo systemctl enable opensearch
 
-# Проверка индексов
-curl -XGET 'https://192.168.10.10:9200/_cat/indices?v' -u 'admin:admin' -k
+# На siem-node1:
+sudo systemctl start wazuh-manager
+sudo systemctl enable wazuh-manager
+sudo systemctl start filebeat
+sudo systemctl enable filebeat
 
-# Проверка подключенных агентов
+# На siem-node3:
+sudo systemctl start opensearch-dashboards
+sudo systemctl enable opensearch-dashboards
+```
+
+#### **8.2. Проверка работоспособности**
+
+**Команды для проверки:**
+```bash
+# Проверить кластер OpenSearch
+curl -XGET "http://192.168.1.10:9200/_cat/nodes?v"
+curl -XGET "http://192.168.1.10:9200/_cat/indices/wazuh*?v"
+
+# Проверить Wazuh Manager
+sudo systemctl status wazuh-manager
 /var/ossec/bin/agent_control -l
 
-# Проверка статуса Filebeat
-systemctl status filebeat
-journalctl -u filebeat -f
-
-# Проверка логов Wazuh Manager
-tail -f /var/ossec/logs/ossec.log
-```
-
-### **5.2. Мониторинг сети**
-```bash
-# Проверка открытых портов
-netstat -tlnp | grep -E '(9200|9300|1514|1515|5601)'
-
-# Проверка соединений
-ss -tulpn | grep -E '(9200|9300|1514|1515|5601)'
-
-# Мониторинг трафика
-tcpdump -i ens192 port 1514 or port 9200 -n
-```
-
-### **5.3. Логи для диагностики**
-
-**Wazuh Manager лог:**
-```bash
-tail -f /var/ossec/logs/ossec.log | grep -E "(ERROR|WARNING|connected)"
-```
-
-**OpenSearch лог:**
-```bash
-tail -f /var/log/opensearch/siem-cluster.log
-```
-
-**Filebeat лог:**
-```bash
-tail -f /var/log/filebeat/filebeat
+# Проверить OpenSearch Dashboards
+curl -XGET "http://192.168.1.12:5601/api/status"
 ```
 
 ---
 
-## **ЧАСТЬ 6: Источники конфигураций и документация**
+### **9. Источники конфигураций и документации**
 
-### **6.1. Официальная документация:**
-- **Wazuh**: https://documentation.wazuh.com/current/
-- **OpenSearch**: https://opensearch.org/docs/latest/
-- **Filebeat**: https://www.elastic.co/guide/en/beats/filebeat/current/index.html
+1. **Официальная документация:**
+   - OpenSearch: https://opensearch.org/docs/latest/
+   - Wazuh: https://documentation.wazuh.com/current/index.html
 
-### **6.2. Критические файлы конфигурации:**
-- `/var/ossec/etc/ossec.conf` - главный конфиг Wazuh
-- `/etc/opensearch/opensearch.yml` - конфиг OpenSearch  
-- `/etc/opensearch-dashboards/opensearch_dashboards.yml` - конфиг Dashboards
-- `/etc/filebeat/filebeat.yml` - конфиг Filebeat
+2. **Порты по умолчанию:**
+   - OpenSearch: 9200 (HTTP), 9300 (Transport)
+   - Wazuh Manager: 1514 (Agents), 1515 (Auth), 55000 (Cluster)
+   - OpenSearch Dashboards: 5601 (Web UI)
 
-### **6.3. Полезные команды для диагностики:**
-```bash
-# Проверка всех служб
-systemctl status opensearch wazuh-manager filebeat opensearch-dashboards
+3. **Конфигурационные файлы:**
+   - OpenSearch: `/usr/share/opensearch/config/opensearch.yml`
+   - Wazuh: `/var/ossec/etc/ossec.conf`
+   - OpenSearch Dashboards: `/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml`
 
-# Проверка логов в реальном времени
-tail -f /var/ossec/logs/alerts/alerts.json | jq '.'
-
-# Проверка нагрузки на OpenSearch
-curl -XGET 'https://192.168.10.10:9200/_nodes/stats?pretty' -u 'admin:admin' -k
-
-# Тестирование правил Wazuh
-/var/ossec/bin/wazuh-logtest
-```
-
-Эта конфигурация обеспечит надежное взаимодействие всех компонентов SIEM системы с правильной маршрутизацией данных и отказоустойчивостью.
 
 Подборка справочных материалов, документации и практических ресурсов, которые помогут вам в развертывании и настройке SIEM-системы на основе Wazuh и OpenSearch.
 
