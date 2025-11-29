@@ -1,3 +1,12 @@
+```
+
+```
+├── scripts/
+│   ├── ai_core_nodes/
+│   │   ├── openai_integration.py
+```
+
+```
 ```python
 #!/usr/bin/env python3
 """
