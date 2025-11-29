@@ -1,3 +1,199 @@
+# Структура проекта
+```
+/api/v1/security-system/
+├── situational-analysis/
+│   ├── POST perimeter-scan/          # Сканирование периметра
+│   ├── POST threat-assessment/       # Оценка уровня угрозы
+│   ├── POST behavioral-analysis/     # Анализ поведения толпы
+│   └── POST biometric-scan/          # Биометрическое сканирование
+├── defense-systems/
+│   ├── PUT shield-activation/        # Активация защитного щита
+│   ├── PUT barrier-deployment/       # Развертывание барьеров
+│   ├── PUT evasion-maneuver/         # Маневр уклонения
+│   └── PUT defense-reallocation/     # Перераспределение защиты
+├── communication-protocols/
+│   ├── POST deescalation-protocol/   # Протокол деэскалации
+│   ├── POST warning-signals/         # Предупредительные сигналы
+│   ├── PUT verbal-commands/          # Голосовые команды
+│   └── PUT non-verbal-signals/       # Невербальные сигналы
+├── surveillance-systems/
+│   ├── GET panoramic-monitoring/     # Круговое наблюдение
+│   ├── POST predictive-tracking/     # Прогностическое отслеживание
+│   ├── PUT stealth-mode/             # Скрытый режим
+│   └── GET multiple-targets-tracking/# Отслеживание множества целей
+├── decision-making/
+│   ├── POST ethical-assessment/      # Этическая оценка
+│   ├── POST tactical-planning/       # Тактическое планирование
+│   ├── POST threat-prioritization/   # Приоритезация угроз
+│   └── POST risk-calculation/        # Расчет рисков
+├── weapon-systems-control/
+│   ├── PUT systems-initialization/   # Инициализация систем
+│   ├── POST target-acquisition/      # Захват цели
+│   ├── PUT force-level/              # Установка уровня силы
+│   ├── POST non-lethal-engagement/   # Нелетальное воздействие
+│   ├── POST temporary-neutralization/# Временная нейтрализация
+│   ├── PUT immediate-cease/          # Немедленное прекращение
+│   └── DELETE disarm-protocol/       # Протокол разоружения
+├── emergency-protocols/
+│   ├── POST evacuation-plan/         # План эвакуации
+│   ├── PUT medical-assistance/       # Медицинская помощь
+│   ├── POST emergency-backup/        # Аварийное резервирование
+│   └── PUT environment-secure/       # Обеспечение безопасности среды
+├── external-coordination/
+│   ├── POST law-enforcement-alert/   # Оповещение правоохранителей
+│   ├── PUT infrastructure-control/   # Контроль инфраструктуры
+│   ├── POST backup-request/          # Запрос подкрепления
+│   └── PUT data-sharing/             # Обмен данными
+├── post-incident/
+│   ├── GET action-log/               # Лог действий
+│   ├── POST incident-report/         # Отчет об инциденте
+│   ├── POST effectiveness-analysis/  # Анализ эффективности
+│   └── POST protocol-review/         # Обзор протоколов
+├── system-maintenance/
+│   ├── GET self-diagnostic/          # Самодиагностика
+│   ├── PUT training-simulation/      # Тренировочная симуляция
+│   ├── POST system-update/           # Обновление системы
+│   └── GET security-audit/           # Проверка безопасности
+└── safety-protocols/
+    ├── PUT emergency-shutdown/       # Аварийное отключение
+    ├── POST human-confirmation/      # Подтверждение оператора
+    ├── GET legal-compliance-check/   # Проверка соответствия законам
+    ├── PUT geo-fencing-activation/   # Активация геозон
+    ├── POST biometric-verification/  # Биометрическая верификация
+    └── DELETE immediate-abort/       # Немедленное прерывание
+
+ 
+
+/api/v1/communication/
+├── greeting/
+│   ├── GET /                            # Проверка статуса API
+│   ├── POST standard/                   # Стандартное приветствие
+│   ├── POST formal/                     # Формальное приветствие
+│   ├── POST informal/                   # Неформальное приветствие
+│   └── POST time-based/                 # Временное приветствие (утро/день/вечер)
+├── user-identity/
+│   ├── POST register/                   # Первоначальная регистрация пользователя
+│   ├── PUT update-profile/              # Обновление данных профиля
+│   ├── GET profile/                     # Получение данных профиля
+│   ├── POST preferences/                # Сохранение предпочтений
+│   ├── PUT update-preferences/          # Обновление предпочтений
+│   └── DELETE forget-preferences/       # Удаление предпочтений
+├── context-management/
+│   ├── POST change-topic/               # Смена темы разговора
+│   ├── GET conversation-history/        # Получение истории диалога
+│   ├── POST return-to-previous/         # Возврат к предыдущей теме
+│   ├── PUT save-context/                # Сохранение текущего контекста
+│   ├── GET get-context/                 # Получение сохраненного контекста
+│   └── DELETE clear-context/            # Очистка контекста
+├── feedback/
+│   ├── POST positive/                   # Положительная обратная связь
+│   ├── POST negative/                   # Отрицательная обратная связь
+│   ├── POST request-clarification/      # Запрос разъяснения
+│   ├── POST request-details/            # Запрос подробностей
+│   ├── POST rate-response/              # Оценка ответа (1-5 звезд)
+│   └── POST suggest-improvement/        # Предложение по улучшению
+└── session-management/
+    ├── POST graceful-shutdown/          # Корректное завершение сеанса
+    ├── POST immediate-exit/             # Немедленный выход
+    ├── GET session-status/              # Проверка статуса сеанса
+    ├── POST extend-session/             # Продление сеанса
+    ├── POST save-progress/              # Сохранение прогресса
+    └── POST pause-session/              # Приостановка сеанса
+
+Ключевые компоненты архитектуры:
+ros_ai_assistant/
+├── CMakeLists.txt
+├── package.xml
+├── setup.py
+├── launch/
+│   ├── assistant.launch
+│   ├── security.launch
+│   └── simulation.launch
+├── config/
+│   ├── security_params.yaml
+│   ├── communication_params.yaml
+│   ├── ai_model_params.yaml
+│   └── api_endpoints.yaml
+├── scripts/
+│   ├── ai_core_nodes/
+│   │   ├── openai_integration.py
+│   │   ├── context_manager.py
+│   │   └── decision_engine.py
+│   ├── security_nodes/
+│   │   ├── threat_assessment.py
+│   │   ├── weapon_controller.py
+│   │   └── emergency_handler.py
+│   ├── communication_nodes/
+│   │   ├── voice_processor.py
+│   │   ├── dialog_manager.py
+│   │   └── user_identity.py
+│   └── integration_nodes/
+│       ├── api_gateway.py
+│       ├── ros_api_bridge.py
+│       └── safety_monitor.py
+├── src/
+│   ├── include/
+│   │   ├── security_system/
+│   │   │   ├── threat_detector.h
+│   │   │   └── weapon_systems.h
+│   │   ├── communication_system/
+│   │   │   ├── voice_recognizer.h
+│   │   │   └── nlp_processor.h
+│   │   └── ai_processor/
+│   │       ├── openai_client.h
+│   │       └── context_handler.h
+│   ├── security_system/
+│   │   ├── threat_assessment.cpp
+│   │   ├── weapon_controller.cpp
+│   │   └── emergency_protocols.cpp
+│   ├── communication_system/
+│   │   ├── voice_processing.cpp
+│   │   ├── dialog_system.cpp
+│   │   └── user_profile.cpp
+│   └── ai_processor/
+│       ├── openai_integration.cpp
+│       └── context_management.cpp
+├── msg/
+│   ├── SecurityAlert.msg
+│   ├── UserCommand.msg
+│   ├── AIResponse.msg
+│   ├── SystemStatus.msg
+│   ├── ThreatAssessment.msg
+│   └── WeaponStatus.msg
+├── srv/
+│   ├── WeaponControl.srv
+│   ├── UserAuthentication.srv
+│   ├── ContextSwitch.srv
+│   ├── EmergencyShutdown.srv
+│   ├── ThreatAssessment.srv
+│   └── OpenAIRequest.srv
+├── api/
+│   ├── security_system/
+│   │   ├── init.py
+│   │   ├── app.py
+│   │   ├── situational_analysis.py
+│   │   ├── defense_systems.py
+│   │   ├── weapon_control.py
+│   │   └── emergency_protocols.py
+│   ├── communication_system/
+│   │   ├── init.py
+│   │   ├── app.py
+│   │   ├── greeting.py
+│   │   ├── user_identity.py
+│   │   └── session_management.py
+│   └── common/
+│       ├── auth.py
+│       ├── database.py
+│       └── utils.py
+├── test/
+│   ├── test_security.py
+│   ├── test_communication.py
+│   ├── test_integration.py
+│   └── test_api.py
+└── docs/
+    ├── api_documentation.md
+    ├── security_protocols.md
+    └── integration_guide.md
 ```
 
 ```
@@ -730,3 +926,4 @@ if __name__ == '__main__':
 ```
 
 Теперь проект готов к запуску! Все необходимые файлы созданы и настроены для работы с ROS и OpenAI API.
+
