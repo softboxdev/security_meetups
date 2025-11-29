@@ -925,5 +925,523 @@ if __name__ == '__main__':
     test_openai_connection()
 ```
 
-Теперь проект готов к запуску! Все необходимые файлы созданы и настроены для работы с ROS и OpenAI API.
+
+## 1. **Обработка пользовательских команд - основной поток**
+
+### `scripts/communication_nodes/dialog_manager.py`
+```python
+#!/usr/bin/env python3
+"""
+Dialog Manager - основной обработчик пользовательских команд
+"""
+
+import rospy
+import json
+from std_msgs.msg import String
+from ros_ai_assistant.msg import UserCommand, AIResponse, SystemStatus
+from ros_ai_assistant.srv import OpenAIRequest, ContextSwitch, ContextSwitchResponse
+
+class DialogManager:
+    def __init__(self):
+        rospy.init_node('dialog_manager')
+        
+        # Публикаторы
+        self.user_command_pub = rospy.Publisher('/ai_assistant/user_command', UserCommand, queue_size=10)
+        self.system_status_pub = rospy.Publisher('/ai_assistant/system_status', SystemStatus, queue_size=10)
+        
+        # Подписчики
+        rospy.Subscriber('/ai_assistant/response', AIResponse, self.ai_response_callback)
+        rospy.Subscriber('/voice_recognition/transcript', String, self.voice_command_callback)
+        
+        # Сервисы
+        self.context_service = rospy.Service('/ai_assistant/context_switch', ContextSwitch, self.handle_context_switch)
+        
+        # Состояние
+        self.current_context = "general"
+        self.user_session = {}
+        
+        rospy.loginfo("Dialog Manager initialized")
+
+    def voice_command_callback(self, msg):
+        """Обработка голосовых команд"""
+        command_text = msg.data
+        rospy.loginfo(f"Received voice command: {command_text}")
+        
+        # Определение типа команды
+        command_type = self._classify_command(command_text)
+        
+        # Создание UserCommand сообщения
+        user_cmd = UserCommand()
+        user_cmd.command_id = rospy.get_time()
+        user_cmd.command_text = command_text
+        user_cmd.command_type = command_type
+        user_cmd.context = self.current_context
+        user_cmd.priority = self._get_priority(command_type)
+        
+        # Публикация команды для обработки
+        self.user_command_pub.publish(user_cmd)
+
+    def _classify_command(self, command_text):
+        """Классификация типа команды"""
+        command_text_lower = command_text.lower()
+        
+        # Команды безопасности
+        security_keywords = ['охрана', 'опасность', 'угроза', 'щит', 'защита']
+        if any(keyword in command_text_lower for keyword in security_keywords):
+            return "security"
+        
+        # Команды общения
+        communication_keywords = ['привет', 'пока', 'спасибо', 'объясни', 'расскажи']
+        if any(keyword in command_text_lower for keyword in communication_keywords):
+            return "communication"
+        
+        # Команды системы
+        system_keywords = ['статус', 'диагностика', 'перезагрузка', 'настройки']
+        if any(keyword in command_text_lower for keyword in system_keywords):
+            return "system"
+            
+        return "general"
+
+    def _get_priority(self, command_type):
+        """Определение приоритета команды"""
+        priorities = {
+            "security": 3,      # Высокий приоритет
+            "system": 2,        # Средний приоритет  
+            "communication": 1, # Низкий приоритет
+            "general": 1
+        }
+        return priorities.get(command_type, 1)
+
+    def ai_response_callback(self, msg):
+        """Обработка ответов от ИИ"""
+        rospy.loginfo(f"AI Response: {msg.response_text}")
+        
+        # Здесь может быть логика для преобразования текстового ответа в речь
+        # или выполнения действий на основе ответа
+        
+        if msg.confidence < 0.5:
+            rospy.logwarn(f"Low confidence response: {msg.confidence}")
+
+    def handle_context_switch(self, req):
+        """Обработка смены контекста"""
+        rospy.loginfo(f"Context switch requested: {req.new_context}")
+        self.current_context = req.new_context
+        
+        return ContextSwitchResponse(
+            success=True,
+            message=f"Context switched to {req.new_context}"
+        )
+
+    def run(self):
+        """Основной цикл"""
+        rate = rospy.Rate(10)  # 10 Hz
+        while not rospy.is_shutdown():
+            # Мониторинг состояния системы
+            status_msg = SystemStatus()
+            status_msg.header.stamp = rospy.Time.now()
+            status_msg.component = "dialog_manager"
+            status_msg.status = "operational"
+            status_msg.is_operational = True
+            
+            self.system_status_pub.publish(status_msg)
+            rate.sleep()
+
+def main():
+    dialog_manager = DialogManager()
+    dialog_manager.run()
+
+if __name__ == '__main__':
+    main()
+```
+
+## 2. **Обработка команд безопасности**
+
+### `scripts/security_nodes/threat_assessment.py`
+```python
+#!/usr/bin/env python3
+"""
+Threat Assessment Node - обработка команд безопасности
+"""
+
+import rospy
+import numpy as np
+from ros_ai_assistant.msg import UserCommand, ThreatAssessment, SecurityAlert
+from ros_ai_assistant.srv import ThreatAssessment as ThreatAssessmentSrv, ThreatAssessmentResponse
+
+class ThreatAssessmentNode:
+    def __init__(self):
+        rospy.init_node('threat_assessment')
+        
+        # Подписка на команды безопасности
+        rospy.Subscriber('/ai_assistant/user_command', UserCommand, self.security_command_callback)
+        
+        # Публикаторы
+        self.threat_pub = rospy.Publisher('/security/threat_assessment', ThreatAssessment, queue_size=10)
+        self.alert_pub = rospy.Publisher('/security/alerts', SecurityAlert, queue_size=10)
+        
+        # Сервисы
+        self.assessment_service = rospy.Service('/security/assess_threat', ThreatAssessmentSrv, self.assess_threat)
+        
+        # Модель оценки угроз
+        self.threat_level = 0.0
+        
+        rospy.loginfo("Threat Assessment Node initialized")
+
+    def security_command_callback(self, msg):
+        """Обработка команд безопасности"""
+        if msg.command_type != "security":
+            return
+            
+        rospy.loginfo(f"Processing security command: {msg.command_text}")
+        
+        # Анализ команды на предмет угроз
+        threat_level = self._analyze_command_threat(msg.command_text)
+        
+        # Публикация оценки угрозы
+        threat_msg = ThreatAssessment()
+        threat_msg.header.stamp = rospy.Time.now()
+        threat_msg.threat_level = threat_level
+        threat_msg.command_text = msg.command_text
+        threat_msg.confidence = 0.8
+        
+        self.threat_pub.publish(threat_msg)
+        
+        # Если уровень угрозы высокий - публикуем alert
+        if threat_level > 0.7:
+            self._publish_security_alert(threat_level, msg.command_text)
+
+    def _analyze_command_threat(self, command_text):
+        """Анализ текста команды на предмет угроз"""
+        high_threat_keywords = ['атака', 'взлом', 'проникновение', 'опасность', 'срочно']
+        medium_threat_keywords = ['проверка', 'сканирование', 'мониторинг', 'внимание']
+        
+        command_lower = command_text.lower()
+        
+        threat_score = 0.0
+        
+        for keyword in high_threat_keywords:
+            if keyword in command_lower:
+                threat_score += 0.3
+                
+        for keyword in medium_threat_keywords:
+            if keyword in command_lower:
+                threat_score += 0.1
+                
+        return min(threat_score, 1.0)
+
+    def _publish_security_alert(self, threat_level, reason):
+        """Публикация оповещения безопасности"""
+        alert_msg = SecurityAlert()
+        alert_msg.header.stamp = rospy.Time.now()
+        alert_msg.alert_level = int(threat_level * 10)  # 1-10
+        alert_msg.reason = reason
+        alert_msg.timestamp = rospy.get_time()
+        
+        self.alert_pub.publish(alert_msg)
+        rospy.logwarn(f"Security Alert Level {alert_msg.alert_level}: {reason}")
+
+    def assess_threat(self, req):
+        """Сервис для оценки угрозы"""
+        rospy.loginfo(f"Threat assessment requested: {req.assessment_data}")
+        
+        # Здесь может быть сложная логика оценки угрозы
+        threat_level = np.random.uniform(0.1, 0.9)  # Заглушка
+        
+        return ThreatAssessmentResponse(
+            threat_level=threat_level,
+            recommendation="Повысить бдительность" if threat_level > 0.5 else "Ситуация под контролем",
+            confidence=0.85
+        )
+
+    def run(self):
+        rate = rospy.Rate(5)  # 5 Hz
+        while not rospy.is_shutdown():
+            rate.sleep()
+
+def main():
+    threat_node = ThreatAssessmentNode()
+    threat_node.run()
+
+if __name__ == '__main__':
+    main()
+```
+
+## 3. **Обработка системных команд**
+
+### `scripts/ai_core_nodes/decision_engine.py`
+```python
+#!/usr/bin/env python3
+"""
+Decision Engine - обработка системных команд и принятие решений
+"""
+
+import rospy
+import json
+from ros_ai_assistant.msg import UserCommand, AIResponse, SystemStatus
+from ros_ai_assistant.srv import OpenAIRequest, WeaponControl, WeaponControlResponse
+
+class DecisionEngine:
+    def __init__(self):
+        rospy.init_node('decision_engine')
+        
+        # Подписка на команды
+        rospy.Subscriber('/ai_assistant/user_command', UserCommand, self.command_callback)
+        rospy.Subscriber('/security/threat_assessment', ThreatAssessment, self.threat_callback)
+        
+        # Публикаторы
+        self.system_status_pub = rospy.Publisher('/system/status', SystemStatus, queue_size=10)
+        self.action_pub = rospy.Publisher('/system/actions', String, queue_size=10)
+        
+        # Клиенты сервисов
+        self.openai_client = rospy.ServiceProxy('/ai_assistant/openai_request', OpenAIRequest)
+        self.weapon_client = rospy.ServiceProxy('/security/weapon_control', WeaponControl)
+        
+        # Состояние системы
+        self.system_state = "normal"
+        self.last_threat_level = 0.0
+        
+        rospy.loginfo("Decision Engine initialized")
+
+    def command_callback(self, msg):
+        """Обработка системных команд"""
+        if msg.command_type != "system":
+            return
+            
+        rospy.loginfo(f"Processing system command: {msg.command_text}")
+        
+        # Принятие решений на основе команды
+        if "статус" in msg.command_text.lower():
+            self._handle_status_command()
+        elif "диагностика" in msg.command_text.lower():
+            self._handle_diagnostic_command()
+        elif "перезагрузка" in msg.command_text.lower():
+            self._handle_reboot_command()
+
+    def threat_callback(self, msg):
+        """Обработка информации об угрозах"""
+        self.last_threat_level = msg.threat_level
+        
+        # Автоматическое принятие решений на основе уровня угрозы
+        if msg.threat_level > 0.8 and self.system_state != "high_alert":
+            self._escalate_security()
+        elif msg.threat_level < 0.3 and self.system_state == "high_alert":
+            self._normalize_security()
+
+    def _handle_status_command(self):
+        """Обработка команды статуса"""
+        status_msg = SystemStatus()
+        status_msg.header.stamp = rospy.Time.now()
+        status_msg.component = "decision_engine"
+        status_msg.status = self.system_state
+        status_msg.is_operational = True
+        
+        self.system_status_pub.publish(status_msg)
+
+    def _handle_diagnostic_command(self):
+        """Обработка команды диагностики"""
+        # Запрос статуса всех компонентов
+        diagnostic_data = {
+            "threat_level": self.last_threat_level,
+            "system_state": self.system_state,
+            "timestamp": rospy.get_time()
+        }
+        
+        action_msg = String()
+        action_msg.data = json.dumps({
+            "action": "diagnostic_report",
+            "data": diagnostic_data
+        })
+        self.action_pub.publish(action_msg)
+
+    def _handle_reboot_command(self):
+        """Обработка команды перезагрузки"""
+        rospy.logwarn("Reboot command received - performing system restart procedures")
+        
+        # Публикация команды перезагрузки
+        action_msg = String()
+        action_msg.data = json.dumps({
+            "action": "system_reboot",
+            "timestamp": rospy.get_time()
+        })
+        self.action_pub.publish(action_msg)
+
+    def _escalate_security(self):
+        """Повышение уровня безопасности"""
+        self.system_state = "high_alert"
+        rospy.logwarn("Security escalated to HIGH ALERT")
+        
+        # Активация дополнительных мер безопасности
+        try:
+            response = self.weapon_client("shield", "activate", 0.8)
+            if response.success:
+                rospy.loginfo("Defensive systems activated")
+        except rospy.ServiceException as e:
+            rospy.logerr(f"Failed to activate defensive systems: {e}")
+
+    def _normalize_security(self):
+        """Возврат к нормальному режиму"""
+        self.system_state = "normal"
+        rospy.loginfo("Security normalized")
+
+    def run(self):
+        rate = rospy.Rate(2)  # 2 Hz
+        while not rospy.is_shutdown():
+            # Постоянный мониторинг и принятие решений
+            self._continuous_monitoring()
+            rate.sleep()
+
+    def _continuous_monitoring(self):
+        """Непрерывный мониторинг системы"""
+        # Здесь может быть логика для автоматического принятия решений
+        # на основе данных с датчиков и состояния системы
+        pass
+
+def main():
+    decision_engine = DecisionEngine()
+    decision_engine.run()
+
+if __name__ == '__main__':
+    main()
+```
+
+## 4. **Координация через API Gateway**
+
+### `scripts/integration_nodes/api_gateway.py`
+```python
+#!/usr/bin/env python3
+"""
+API Gateway - обработка REST API команд и маршрутизация в ROS
+"""
+
+import rospy
+import threading
+from flask import Flask, request, jsonify
+from flask_restful import Api, Resource
+import json
+from std_msgs.msg import String
+from ros_ai_assistant.msg import UserCommand
+
+class APIGateway:
+    def __init__(self):
+        rospy.init_node('api_gateway', anonymous=True)
+        
+        # Публикаторы для различных типов команд
+        self.user_command_pub = rospy.Publisher('/ai_assistant/user_command', UserCommand, queue_size=10)
+        self.security_pub = rospy.Publisher('/api/security_commands', String, queue_size=10)
+        self.communication_pub = rospy.Publisher('/api/communication_commands', String, queue_size=10)
+        
+        # Настройка Flask API
+        self.app = Flask(__name__)
+        self.api = Api(self.app)
+        self.setup_routes()
+        
+        rospy.loginfo("API Gateway initialized")
+
+    def setup_routes(self):
+        """Настройка маршрутов API"""
+        # Security endpoints
+        self.api.add_resource(SecurityEndpoint, '/api/v1/security-system/<string:endpoint>')
+        
+        # Communication endpoints  
+        self.api.add_resource(CommunicationEndpoint, '/api/v1/communication/<string:endpoint>')
+        
+        # System endpoints
+        self.api.add_resource(SystemEndpoint, '/api/v1/system/<string:endpoint>')
+
+    def publish_user_command(self, command_data):
+        """Публикация пользовательской команды в ROS"""
+        cmd_msg = UserCommand()
+        cmd_msg.command_id = rospy.get_time()
+        cmd_msg.command_text = command_data.get('text', '')
+        cmd_msg.command_type = command_data.get('type', 'general')
+        cmd_msg.context = command_data.get('context', '')
+        cmd_msg.priority = command_data.get('priority', 1)
+        
+        self.user_command_pub.publish(cmd_msg)
+        rospy.loginfo(f"Published user command: {cmd_msg.command_text}")
+
+    def run_flask(self):
+        """Запуск Flask сервера"""
+        port = rospy.get_param('~api_port', 5000)
+        self.app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+
+    def run(self):
+        """Основной цикл"""
+        # Запуск Flask в отдельном потоке
+        flask_thread = threading.Thread(target=self.run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
+        
+        rospy.loginfo(f"API Gateway started on port {rospy.get_param('~api_port', 5000)}")
+        rospy.spin()
+
+# Реализация API endpoints
+class SecurityEndpoint(Resource):
+    def post(self, endpoint):
+        data = request.get_json()
+        rospy.loginfo(f"Security API: {endpoint} - {data}")
+        
+        # Публикация команды безопасности
+        gateway = rospy.get_param('~api_gateway_instance')
+        gateway.publish_user_command({
+            'text': f"Security command: {endpoint}",
+            'type': 'security',
+            'priority': 3
+        })
+        
+        return {"status": "security_command_processed", "endpoint": endpoint}
+
+class CommunicationEndpoint(Resource):
+    def post(self, endpoint):
+        data = request.get_json()
+        rospy.loginfo(f"Communication API: {endpoint} - {data}")
+        
+        gateway = rospy.get_param('~api_gateway_instance')
+        gateway.publish_user_command({
+            'text': data.get('message', ''),
+            'type': 'communication', 
+            'priority': 1
+        })
+        
+        return {"status": "communication_command_processed", "endpoint": endpoint}
+
+class SystemEndpoint(Resource):
+    def post(self, endpoint):
+        data = request.get_json()
+        rospy.loginfo(f"System API: {endpoint} - {data}")
+        
+        gateway = rospy.get_param('~api_gateway_instance')
+        gateway.publish_user_command({
+            'text': f"System command: {endpoint}",
+            'type': 'system',
+            'priority': 2
+        })
+        
+        return {"status": "system_command_processed", "endpoint": endpoint}
+
+def main():
+    gateway = APIGateway()
+    rospy.set_param('~api_gateway_instance', gateway)
+    gateway.run()
+
+if __name__ == '__main__':
+    main()
+```
+
+## 5. **Схема обработки команд**
+
+```
+Пользователь/API → API Gateway → UserCommand топик
+                             ↓
+                    Dialog Manager (классификация)
+                             ↓
+    ┌─────────────────┬─────────────────┬─────────────────┐
+    ↓                 ↓                 ↓                 ↓
+Security Nodes    AI Core Nodes    Communication    Integration
+Threat Assessment Decision Engine  User Identity    Safety Monitor
+Weapon Controller Context Manager  Voice Processor  ROS-API Bridge
+Emergency Handler OpenAI Integration
+```
+
+Каждый модуль обрабатывает определенный тип команд и взаимодействует с другими через ROS топики и сервисы.
 
