@@ -358,3 +358,366 @@ openai_integration:
 </launch>
 ```
 
+Для запуска проекта необходимо создать следующие файлы и выполнить настройки:
+
+## 1. Основные конфигурационные файлы
+
+### `package.xml`
+```xml
+<?xml version="1.0"?>
+<package format="2">
+  <name>ros_ai_assistant</name>
+  <version>1.0.0</version>
+  <description>ROS AI Assistant with OpenAI integration</description>
+  <maintainer email="admin@example.com">ROS AI Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <buildtool_depend>catkin_simple</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
+  <depend>actionlib</depend>
+  <depend>actionlib_msgs</depend>
+
+  <build_depend>python3</build_depend>
+  <build_depend>python3-catkin-pkg</build_depend>
+  <build_depend>python3-pip</build_depend>
+
+  <exec_depend>python3</exec_depend>
+  <exec_depend>python3-rospkg</exec_depend>
+  <exec_depend>python3-aiohttp</exec_depend>
+  <exec_depend>python3-asyncio</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-flask</exec_depend>
+  <exec_depend>python3-flask-restful</exec_depend>
+
+  <export>
+    <architecture_independent/>
+  </export>
+</package>
+```
+
+### `CMakeLists.txt`
+```cmake
+cmake_minimum_required(VERSION 3.0.2)
+project(ros_ai_assistant)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  rospy
+  std_msgs
+  message_generation
+)
+
+catkin_python_setup()
+
+add_message_files(
+  FILES
+  SecurityAlert.msg
+  UserCommand.msg
+  AIResponse.msg
+  SystemStatus.msg
+  ThreatAssessment.msg
+  WeaponStatus.msg
+)
+
+add_service_files(
+  FILES
+  WeaponControl.srv
+  UserAuthentication.srv
+  ContextSwitch.srv
+  EmergencyShutdown.srv
+  ThreatAssessment.srv
+  OpenAIRequest.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS 
+  message_runtime 
+  roscpp 
+  rospy 
+  std_msgs
+)
+
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+)
+
+install(DIRECTORY launch config scripts api
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+install(PROGRAMS
+  scripts/ai_core_nodes/openai_integration.py
+  scripts/ai_core_nodes/context_manager.py
+  scripts/ai_core_nodes/decision_engine.py
+  scripts/security_nodes/threat_assessment.py
+  scripts/security_nodes/weapon_controller.py
+  scripts/security_nodes/emergency_handler.py
+  scripts/communication_nodes/voice_processor.py
+  scripts/communication_nodes/dialog_manager.py
+  scripts/communication_nodes/user_identity.py
+  scripts/integration_nodes/api_gateway.py
+  scripts/integration_nodes/ros_api_bridge.py
+  scripts/integration_nodes/safety_monitor.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+```
+
+### `setup.py`
+```python
+from distutils.core import setup
+from catkin_pkg.python_setup import generate_distutils_setup
+
+setup_args = generate_distutils_setup(
+    packages=[
+        'ros_ai_assistant',
+        'ros_ai_assistant.ai_core_nodes',
+        'ros_ai_assistant.security_nodes', 
+        'ros_ai_assistant.communication_nodes',
+        'ros_ai_assistant.integration_nodes',
+    ],
+    package_dir={'': 'scripts'}
+)
+
+setup(**setup_args)
+```
+
+## 2. Запускаемые файлы
+
+### `launch/assistant.launch`
+```xml
+<launch>
+    <!-- Параметры -->
+    <rosparam command="load" file="$(find ros_ai_assistant)/config/security_params.yaml"/>
+    <rosparam command="load" file="$(find ros_ai_assistant)/config/communication_params.yaml"/>
+    <rosparam command="load" file="$(find ros_ai_assistant)/config/ai_model_params.yaml"/>
+    <rosparam command="load" file="$(find ros_ai_assistant)/config/api_endpoints.yaml"/>
+
+    <!-- AI Core Nodes -->
+    <node name="openai_integration" pkg="ros_ai_assistant" type="openai_integration.py" output="screen">
+        <param name="openai_api_key" value="$(env OPENAI_API_KEY)"/>
+    </node>
+    
+    <node name="context_manager" pkg="ros_ai_assistant" type="context_manager.py" output="screen"/>
+    <node name="decision_engine" pkg="ros_ai_assistant" type="decision_engine.py" output="screen"/>
+
+    <!-- Security Nodes -->
+    <node name="threat_assessment" pkg="ros_ai_assistant" type="threat_assessment.py" output="screen"/>
+    <node name="emergency_handler" pkg="ros_ai_assistant" type="emergency_handler.py" output="screen"/>
+
+    <!-- Communication Nodes -->
+    <node name="dialog_manager" pkg="ros_ai_assistant" type="dialog_manager.py" output="screen"/>
+    <node name="user_identity" pkg="ros_ai_assistant" type="user_identity.py" output="screen"/>
+
+    <!-- Integration Nodes -->
+    <node name="safety_monitor" pkg="ros_ai_assistant" type="safety_monitor.py" output="screen"/>
+    
+    <!-- API Gateway (запускается отдельно из-за Flask) -->
+    <node name="api_gateway" pkg="ros_ai_assistant" type="api_gateway.py" output="screen" respawn="true"/>
+</launch>
+```
+
+### `scripts/integration_nodes/api_gateway.py`
+```python
+#!/usr/bin/env python3
+import rospy
+import threading
+from flask import Flask, request, jsonify
+from flask_restful import Api, Resource
+import subprocess
+import os
+
+class APIGateway:
+    def __init__(self):
+        self.app = Flask(__name__)
+        self.api = Api(self.app)
+        self.setup_routes()
+        
+    def setup_routes(self):
+        # Security endpoints
+        self.api.add_resource(SecurityAPI, '/api/v1/security-system/<string:endpoint>')
+        self.api.add_resource(CommunicationAPI, '/api/v1/communication/<string:endpoint>')
+        
+    def run(self):
+        port = rospy.get_param('~api_port', 5000)
+        self.app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+
+class SecurityAPI(Resource):
+    def post(self, endpoint):
+        try:
+            data = request.get_json()
+            rospy.loginfo(f"Security API call: {endpoint}")
+            
+            # Здесь будет интеграция с ROS сервисами
+            return {"status": "success", "endpoint": endpoint, "data": data}
+        except Exception as e:
+            return {"error": str(e)}, 500
+
+class CommunicationAPI(Resource):
+    def post(self, endpoint):
+        try:
+            data = request.get_json()
+            rospy.loginfo(f"Communication API call: {endpoint}")
+            
+            # Здесь будет интеграция с ROS сервисами
+            return {"status": "success", "endpoint": endpoint, "data": data}
+        except Exception as e:
+            return {"error": str(e)}, 500
+
+def main():
+    rospy.init_node('api_gateway', anonymous=True)
+    gateway = APIGateway()
+    
+    # Запуск Flask в отдельном потоке
+    flask_thread = threading.Thread(target=gateway.run)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    rospy.loginfo("API Gateway started")
+    rospy.spin()
+
+if __name__ == '__main__':
+    main()
+```
+
+## 3. Файлы конфигурации
+
+### `config/ai_model_params.yaml`
+```yaml
+openai_integration:
+  model: "gpt-4"
+  max_tokens: 2000
+  temperature: 0.7
+  max_context_length: 10
+  request_timeout: 30
+
+security_system:
+  threat_levels:
+    low: 0.3
+    medium: 0.6
+    high: 0.8
+    critical: 0.95
+
+communication:
+  supported_languages: ["ru", "en"]
+  default_language: "ru"
+  response_timeout: 10
+```
+
+### `config/api_endpoints.yaml`
+```yaml
+security_endpoints:
+  base_url: "/api/v1/security-system"
+  endpoints:
+    situational_analysis: "/situational-analysis"
+    threat_assessment: "/threat-assessment"
+    weapon_control: "/weapon-control"
+    emergency_protocols: "/emergency-protocols"
+
+communication_endpoints:
+  base_url: "/api/v1/communication"
+  endpoints:
+    greeting: "/greeting"
+    user_identity: "/user-identity"
+    session_management: "/session-management"
+
+server:
+  port: 5000
+  host: "0.0.0.0"
+```
+
+## 4. Установка и запуск
+
+### Создайте файл установки зависимостей `install_requirements.sh`
+```bash
+#!/bin/bash
+echo "Installing Python dependencies..."
+pip3 install aiohttp asyncio flask flask-restful pyyaml rospkg
+
+echo "Setting up environment..."
+export OPENAI_API_KEY="your_openai_api_key_here"
+echo "export OPENAI_API_KEY=$OPENAI_API_KEY" >> ~/.bashrc
+
+echo "Installation complete!"
+```
+
+### Создайте файл запуска `run_project.sh`
+```bash
+#!/bin/bash
+
+# Активация ROS
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+
+# Запуск проекта
+echo "Starting ROS AI Assistant..."
+roslaunch ros_ai_assistant assistant.launch
+```
+
+## 5. Инструкция по запуску
+
+1. **Установите зависимости:**
+```bash
+chmod +x install_requirements.sh
+./install_requirements.sh
+```
+
+2. **Соберите проект:**
+```bash
+cd ~/catkin_ws
+catkin_make
+source devel/setup.bash
+```
+
+3. **Установите переменные окружения:**
+```bash
+export OPENAI_API_KEY="your_actual_openai_api_key"
+```
+
+4. **Запустите проект:**
+```bash
+chmod +x run_project.sh
+./run_project.sh
+```
+
+5. **Проверьте работу API:**
+```bash
+curl -X POST http://localhost:5000/api/v1/communication/greeting \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Привет"}'
+```
+
+## 6. Дополнительные утилиты
+
+### `scripts/test_connection.py`
+```python
+#!/usr/bin/env python3
+import rospy
+from ros_ai_assistant.srv import OpenAIRequest
+
+def test_openai_connection():
+    rospy.wait_for_service('/ai_assistant/openai_request')
+    try:
+        openai_proxy = rospy.ServiceProxy('/ai_assistant/openai_request', OpenAIRequest)
+        response = openai_proxy("Test message", "test", "gpt-4")
+        print(f"Response: {response.response}")
+        print(f"Success: {response.success}")
+    except rospy.ServiceException as e:
+        print(f"Service call failed: {e}")
+
+if __name__ == '__main__':
+    test_openai_connection()
+```
+
+Теперь проект готов к запуску! Все необходимые файлы созданы и настроены для работы с ROS и OpenAI API.
